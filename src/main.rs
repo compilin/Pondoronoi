@@ -1,9 +1,11 @@
+use std::env;
+use std::str::FromStr;
 use crate::geom::WeightedPoint;
 
-pub use log::*;
+pub use notan::log;
 pub use notan::draw::*;
-use notan::math::Vec2;
 pub use notan::prelude::*;
+use notan::math::Vec2;
 use voronoi::Voronoi;
 
 mod geom;
@@ -27,11 +29,18 @@ fn main() -> Result<(), String> {
         .set_lazy_loop(true)
         .set_high_dpi(true);
 
+    let log_level = env::var_os("LOG_LEVEL")
+        .map(|ll| log::LevelFilter::from_str(&ll.into_string().unwrap()))
+        .transpose()
+        .map_err(|err| err.to_string())?
+        .unwrap_or(log::LevelFilter::Debug);
+
     notan::init_with(setup)
         .add_config(win)
+        .add_config(DrawConfig)
+        .add_config(log::LogConfig::new(log_level))
         .draw(|gfx: &mut Graphics, state: &mut State| state.renderer(gfx))
         .event(|app: &mut App, state: &mut State, event: Event| state.listener(app, event))
-        .add_config(DrawConfig)
         .build()
 }
 
@@ -70,6 +79,7 @@ const HOVER_MAX_DIST: f32 = 15.;
 
 impl State {
     pub fn renderer(&mut self, gfx: &mut Graphics) {
+        log::trace!("State::renderer");
         let mut draw = gfx.create_draw();
         let bg: Color = Color::from_hex(BG_COLOR);
         draw.clear(bg);
@@ -81,7 +91,7 @@ impl State {
     }
 
     pub fn listener(&mut self, app: &mut App, event: Event) {
-        // println!("Event: {event:?}");
+        log::trace!("Event: {event:?}");
         match &event {
             Event::MouseDown {
                 button: MouseButton::Left,
@@ -112,7 +122,7 @@ impl State {
                 let scroll = (delta_y / SCROLL_INCREMENT).abs().clamp(0.25, 2.0) * delta_y.signum();
                 let factor = ZOOM_FACTOR.powf(scroll);
                 self.view.zoom_around(factor, self.mouse_pos);
-                println!("Zoom: {delta_y} => {scroll} => {}", factor);
+                log::debug!("Zoom: {delta_y} => {scroll} => {}", factor);
             }
             Event::WindowResize { width, height } => {
                 if !self.rendered {
@@ -141,7 +151,7 @@ impl State {
                             p,
                             self.view.to_screen(p.pos)
                         )
-                        .unwrap();
+                            .unwrap();
                     }
                     print!("{buffer}");
                 }
@@ -152,7 +162,7 @@ impl State {
             },
             _ => return,
         }
-        println!("Processed event {:?}", event);
+        log::debug!("Processed event {:?}", event);
     }
 }
 
@@ -169,7 +179,7 @@ impl ViewPort {
     }
 
     pub fn enclosing<'a>(
-        pts: impl IntoIterator<Item = &'a WeightedPoint>,
+        pts: impl IntoIterator<Item=&'a WeightedPoint>,
         display: Vec2,
         margin: f32,
     ) -> Self {
@@ -191,13 +201,10 @@ impl ViewPort {
         let mid = ret.to_screen(((max.x - min.x) / 2., (max.y - min.y) / 2.));
         let viewmid = display / 2.;
         ret.move_screen(viewmid - mid);
-        println!(
-            "Enclosing ({}..{}/{}..{}) into {display:?}: r={r},",
-            min.x, max.x, min.y, max.y
-        );
-        println!(
-            "\t{mid:?} -> {viewmid:?} => {:?}\n\tmatrix: {ret:?}",
-            ret.to_screen(mid)
+        log::debug!(
+            "Enclosing ({}..{}/{}..{}) into {display:?}: r={r},\n\
+            \t{mid:?} -> {viewmid:?} => {:?}\n\tmatrix: {ret:?}",
+            min.x, max.x, min.y, max.y, ret.to_screen(mid)
         );
         ret
     }
@@ -243,7 +250,7 @@ impl ViewPort {
     pub fn move_screen(&mut self, delta: Vec2) {
         let old = self.off;
         self.off += delta;
-        trace!("move_screen: {old} + {delta} = {:?}", self.off);
+        log::trace!("move_screen: {old} + {delta} = {:?}", self.off);
     }
 
     /// Moves the viewport by the given delta in mathematical space

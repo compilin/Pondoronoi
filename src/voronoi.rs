@@ -89,6 +89,7 @@ impl Voronoi {
     }
 
     pub fn hover(&mut self, pos: Option<(Vec2, f32)>) {
+        let prev = self.hovered;
         self.hovered = pos
             .and_then(|(pos, max_dist)| {
                 self.vertices
@@ -99,5 +100,8 @@ impl Voronoi {
                     .take_if(|m| m.1 <= max_dist)
             })
             .map(|m| m.0);
+        if self.hovered != prev {
+            log::debug!("Hovered: {:?} to {:?}", prev, self.hovered);
+        }
     }
 }
