@@ -3,7 +3,6 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WeightedPoint {
-    pub(crate) name: String,
     pub(crate) label: String,
     pub(crate) pos: Vec2,
     pub(crate) weight: f32,
@@ -14,7 +13,6 @@ impl WeightedPoint {
         let name = name.to_string();
         Self {
             label: format!("{name}, {weight}"),
-            name,
             pos: p,
             weight,
         }
@@ -26,9 +24,7 @@ impl WeightedPoint {
         if a == b {
             Bisector::Line {
                 orig: (self.pos + other.pos) / 2.,
-                vec: (other.pos - self.pos)
-                    .rotate(Vec2::Y)
-                    .normalize(),
+                vec: (other.pos - self.pos).rotate(Vec2::Y).normalize(),
             }
         } else {
             let a2 = a.powi(2);

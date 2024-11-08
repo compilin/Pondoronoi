@@ -1,11 +1,11 @@
+use crate::geom::WeightedPoint;
 use std::env;
 use std::str::FromStr;
-use crate::geom::WeightedPoint;
 
-pub use notan::log;
 pub use notan::draw::*;
-pub use notan::prelude::*;
+pub use notan::log;
 use notan::math::Vec2;
+pub use notan::prelude::*;
 use voronoi::Voronoi;
 
 mod geom;
@@ -22,9 +22,15 @@ struct State {
     rendered: bool,
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+const TGT_WASM: bool = false;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+const TGT_WASM: bool = true;
+
 #[notan_main]
 fn main() -> Result<(), String> {
     let win = WindowConfig::new()
+        .set_size(1000, 800)
         .set_vsync(true)
         .set_lazy_loop(true)
         .set_high_dpi(true);
@@ -38,7 +44,7 @@ fn main() -> Result<(), String> {
     notan::init_with(setup)
         .add_config(win)
         .add_config(DrawConfig)
-        .add_config(log::LogConfig::new(log_level))
+        .add_config(log::LogConfig::new(log_level).use_colors(!TGT_WASM))
         .draw(|gfx: &mut Graphics, state: &mut State| state.renderer(gfx))
         .event(|app: &mut App, state: &mut State, event: Event| state.listener(app, event))
         .build()
@@ -70,7 +76,7 @@ const PT_LBL_SIZE: f32 = 20.;
 const MIN_DIM: f32 = 1.;
 const SCROLL_INCREMENT: f32 = 100.;
 const ZOOM_FACTOR: f32 = 1.2;
-const BG_COLOR: u32 = 0x282b30FF;
+const BG_COLOR: u32 = 0x282B30FF;
 const FG_COLOR: u32 = 0xFFFFFFFF;
 const INACTIVE_TEXT_COLOR: u32 = 0x829098FF;
 const INACTIVE_COLOR: u32 = 0x42454980;
@@ -80,6 +86,16 @@ const HOVER_MAX_DIST: f32 = 15.;
 impl State {
     pub fn renderer(&mut self, gfx: &mut Graphics) {
         log::trace!("State::renderer");
+
+        if !self.rendered {
+            let (width, height) = gfx.size();
+            self.view = ViewPort::enclosing(
+                self.voronoi.vertices(),
+                Vec2::new(width as f32, height as f32),
+                2.,
+            );
+        }
+
         let mut draw = gfx.create_draw();
         let bg: Color = Color::from_hex(BG_COLOR);
         draw.clear(bg);
@@ -125,13 +141,7 @@ impl State {
                 log::debug!("Zoom: {delta_y} => {scroll} => {}", factor);
             }
             Event::WindowResize { width, height } => {
-                if !self.rendered {
-                    self.view = ViewPort::enclosing(
-                        self.voronoi.vertices(),
-                        Vec2::new(*width as f32, *height as f32),
-                        2.,
-                    );
-                } else {
+                if self.rendered {
                     self.view.move_screen(Vec2::new(
                         ((self.display_size.0 - width) / 2) as f32,
                         ((self.display_size.1 - height) / 2) as f32,
@@ -145,13 +155,13 @@ impl State {
                     let mut buffer = String::new();
                     write!(&mut buffer, "Matrix: {:?}\nPoints: \n", self.view).unwrap();
                     for p in self.voronoi.vertices() {
-                        write!(
+                        writeln!(
                             &mut buffer,
-                            "\t - {:?} => {:?}\n",
+                            "\t - {:?} => {:?}",
                             p,
                             self.view.to_screen(p.pos)
                         )
-                            .unwrap();
+                        .unwrap();
                     }
                     print!("{buffer}");
                 }
@@ -179,7 +189,7 @@ impl ViewPort {
     }
 
     pub fn enclosing<'a>(
-        pts: impl IntoIterator<Item=&'a WeightedPoint>,
+        pts: impl IntoIterator<Item = &'a WeightedPoint>,
         display: Vec2,
         margin: f32,
     ) -> Self {
@@ -204,7 +214,11 @@ impl ViewPort {
         log::debug!(
             "Enclosing ({}..{}/{}..{}) into {display:?}: r={r},\n\
             \t{mid:?} -> {viewmid:?} => {:?}\n\tmatrix: {ret:?}",
-            min.x, max.x, min.y, max.y, ret.to_screen(mid)
+            min.x,
+            max.x,
+            min.y,
+            max.y,
+            ret.to_screen(mid)
         );
         ret
     }

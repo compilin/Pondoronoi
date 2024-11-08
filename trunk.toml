@@ -1,0 +1,12 @@
+trunk-version = "^0.21"
+
+[build]
+target = "index.html" # The index HTML file to drive the bundling process.
+release = false       # Build in release mode.
+dist = "dist"         # The output dir for all final assets.
+minify = "on_release"      # Control minification: can be one of: never, on_release, always
+locked = true
+
+[watch]
+watch = ["src/"]  # Paths to watch. The `build.target`'s parent folder is watched by default.
+ignore = [] # Paths to ignore.

@@ -3,8 +3,8 @@ use crate::*;
 use std::collections::HashMap;
 
 pub struct Voronoi {
-    vertices: Vec<WeightedPoint>,
-    edges: BisectMap,
+    points: Vec<WeightedPoint>,
+    bisectors: BisectMap,
     hovered: Option<usize>,
 }
 
@@ -12,13 +12,13 @@ impl Voronoi {
     pub(crate) fn new(pts: impl Into<Vec<WeightedPoint>>) -> Self {
         let vertices = pts.into();
         Self {
-            edges: Self::bisect_all(&vertices),
-            vertices,
+            bisectors: Self::bisect_all(&vertices),
+            points: vertices,
             hovered: None,
         }
     }
 
-    fn bisect_all<'a>(pts: &Vec<WeightedPoint>) -> BisectMap {
+    fn bisect_all(pts: &[WeightedPoint]) -> BisectMap {
         let mut map = HashMap::new();
         let iter = pts.iter().enumerate();
         for (i1, p1) in iter.clone() {
@@ -81,18 +81,18 @@ impl Voronoi {
     }
 
     pub fn vertices(&self) -> &Vec<WeightedPoint> {
-        &self.vertices
+        &self.points
     }
 
     pub fn edges(&self) -> &BisectMap {
-        &self.edges
+        &self.bisectors
     }
 
     pub fn hover(&mut self, pos: Option<(Vec2, f32)>) {
         let prev = self.hovered;
         self.hovered = pos
             .and_then(|(pos, max_dist)| {
-                self.vertices
+                self.points
                     .iter()
                     .map(|v| v.pos.distance(pos))
                     .enumerate()
