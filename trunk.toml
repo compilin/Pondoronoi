@@ -8,5 +8,5 @@ minify = "on_release"      # Control minification: can be one of: never, on_rele
 locked = true
 
 [watch]
-watch = ["src/"]  # Paths to watch. The `build.target`'s parent folder is watched by default.
+watch = ["src/", "trunk.toml", "index.html"]  # Paths to watch. The `build.target`'s parent folder is watched by default.
 ignore = [] # Paths to ignore.
