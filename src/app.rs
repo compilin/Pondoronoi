@@ -176,7 +176,7 @@ impl State {
                     }
                     print!("{buffer}");
                 }
-                KeyCode::Q => {
+                KeyCode::Q if !TGT_WASM => {
                     app.exit();
                 }
                 _ => {

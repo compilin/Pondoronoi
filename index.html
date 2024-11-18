@@ -13,6 +13,7 @@
             height: 100%;
             padding: 0;
             margin: 0;
+            color: white;
             background-color: #252526;
         }
 
@@ -22,12 +23,42 @@
 
         body {
             display: flex;
+            flex-direction: row;
+        }
+
+        .sidebar {
+            flex: 300px 1 0;
+            background-color: #FFFFFF20;
+            padding: 1em;
+        }
+
+        main {
+            flex: 70% 3 0;
+            display: flex;
             align-items: center;
             justify-content: center;
         }
+
+
     </style>
 </head>
 <body>
-<canvas id="notan_app"></canvas>
+    <div class="sidebar">
+        <h3>Controls</h3>
+        <em>Touch controls not yet supported, sorry.
+            It seems keyboard layout isn't taken into account right now so if you're on AZERTY and <kbd>A</kbd> doesn't work try <kbd>Q</kbd></em>
+        <dl>
+            <dt>Left mouse</dt><dd>Drag to pan view</dd>
+            <dt>Scroll</dt><dd>Zoom in/out</dd>
+            <dt><kbd>A</kbd></dt><dd>Add point on mouse</dd>
+            <dt><kbd>D</kbd></dt><dd>Delete hovered point</dd>
+            <dt><kbd>R</kbd></dt><dd>Randomizes points</dd>
+            <dt><kbd>Ctrl</kbd> + Scroll or <kbd>Ctrl</kbd> + <kbd>Page Up</kbd> / <kbd>Page Down</kbd></dt><dd>Adjust hovered point weight</dd>
+            <dt><kbd>Ctrl</kbd> + Left mouse</dt><dd>Drag hovered point</dd>
+        </dl>
+    </div>
+    <main>
+        <canvas id="notan_app"></canvas>
+    </main>
 </body>
 </html>
