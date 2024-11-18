@@ -64,10 +64,18 @@ fn main() -> Result<(), String> {
 
 fn create_voronoi() -> Result<Voronoi, Error> {
     let points = vec![
-        WeightedPoint::new("A", Vec2::new(0., 0.), 1.),
-        WeightedPoint::new("B", Vec2::new(1., 1.), 1.),
-        WeightedPoint::new("C", Vec2::new(2., 0.), 2.2),
-        // WeightedPoint::new("D", Vec2::new(2., 1.), 2.2),
+        // // Equilateral triangle
+        // WeightedPoint::new("A", Vec2::new(0., 1.), 1.),
+        // WeightedPoint::new("B", Vec2::new(f32::sqrt(2.), -f32::sqrt(2.)), 1.),
+        // WeightedPoint::new("C", Vec2::new(-f32::sqrt(2.), -f32::sqrt(2.)), 1.),
+
+        // WeightedPoint::new("A", Vec2::new(0., 0.), 1.),
+        // WeightedPoint::new("B", Vec2::new(0., 1.), 2.),
+        // WeightedPoint::new("C", Vec2::new(1., 1.), 1.),
+        // WeightedPoint::new("D", Vec2::new(1., 0.), 2.),
+        WeightedPoint::new("A", Vec2::new(0., 0.), 100),
+        WeightedPoint::new("B", Vec2::new(1., 0.), 150),
+        WeightedPoint::new("C", Vec2::new(2., 0.), 200),
     ];
     Voronoi::new(points)
 }

@@ -1,18 +1,25 @@
 use crate::geom::WeightedPoint;
-use crate::log::{debug, trace};
-use crate::voronoi::Voronoi;
+use crate::log::{debug, error, info, trace};
+use crate::voronoi::{Hovered, Voronoi};
 use crate::{
     App, AppState, Color, CreateDraw, Event, Font, Graphics, KeyCode, MouseButton, BG_COLOR,
     DEBUG_FIX_DISPLAY_SIZE, HOVER_MAX_DIST, MIN_DIM, SCROLL_INCREMENT, ZOOM_FACTOR, ZOOM_RANGE,
 };
 use notan::math::{Affine2, UVec2, Vec2};
+use notan::random::rand::distributions::uniform::SampleRange;
+use notan::random::rand::distributions::WeightedIndex;
+use notan::random::rand::prelude::*;
+use std::collections::HashSet;
+use std::iter::zip;
+use std::ops::{Range, RangeInclusive};
 
 #[derive(AppState)]
 pub struct State {
     voronoi: Voronoi,
     view: ViewPort,
     mouse_drag: Option<Vec2>,
-    mouse_pos: Vec2,
+    mouse_pos: Option<Vec2>,
+    mod_keys: HashSet<Modifier>,
     font: Font,
     render_size: UVec2,
     rendered: bool,
@@ -24,8 +31,9 @@ impl State {
             voronoi,
             view: ViewPort::default(),
             font,
-            mouse_pos: Vec2::ZERO,
+            mouse_pos: None,
             mouse_drag: None,
+            mod_keys: HashSet::new(),
             render_size: (0, 0).into(),
             rendered: false,
         }
@@ -37,7 +45,7 @@ impl State {
         if !self.rendered {
             self.render_size = gfx.size().into();
             self.view = ViewPort::enclosing(
-                self.voronoi.vertices().iter().map(|(_, v)| v),
+                self.voronoi.points().iter().map(|(_, v)| v),
                 self.render_size.as_vec2(),
                 2.,
             );
@@ -85,32 +93,55 @@ impl State {
                 self.mouse_drag = None;
             }
             Event::MouseEnter { x, y } | Event::MouseMove { x, y } => {
-                self.mouse_pos = Vec2::new(*x as f32, *y as f32);
+                let mouse_pos = Vec2::new(*x as f32, *y as f32);
+                self.mouse_pos = Some(mouse_pos);
                 if let Some(pos) = self.mouse_drag {
                     let o = self.view.to_screen(pos);
-                    self.view.move_screen(self.mouse_pos - o);
+                    self.view.move_screen(mouse_pos - o);
                 }
-                self.voronoi.hover(Some((
-                    self.view.to_math(self.mouse_pos),
-                    HOVER_MAX_DIST * self.view.to_math_ratio(),
-                )));
+                self.update_hover();
                 return;
             }
             Event::MouseLeft { .. } => {
-                self.voronoi.hover(None);
+                self.mouse_pos = None;
+                self.update_hover();
             }
             Event::MouseWheel { delta_y, .. } => {
-                let scroll = (delta_y / SCROLL_INCREMENT).abs().clamp(0.25, 2.0) * delta_y.signum();
-                let factor = ZOOM_FACTOR.powf(scroll);
-                self.view.zoom_around(factor, self.mouse_pos);
-                debug!("Zoom: {delta_y} => {scroll} => {}", factor);
+                if let Some(mouse_pos) = self.mouse_pos {
+                    if self.mod_keys.contains(&Modifier::Control) {
+                        self.change_weight(*delta_y > 0.);
+                    } else {
+                        let scroll =
+                            (delta_y / SCROLL_INCREMENT).abs().clamp(0.25, 2.0) * delta_y.signum();
+                        let factor = ZOOM_FACTOR.powf(scroll);
+                        self.view.zoom_around(factor, mouse_pos);
+                        debug!("Zoom: {delta_y} => {scroll} => {}", factor);
+                    }
+                }
+            }
+            Event::KeyDown { key } => {
+                if let Some(modif) = Modifier::from_key(key) {
+                    if !self.mod_keys.insert(modif) {
+                        return;
+                    }
+                }
             }
             Event::KeyUp { key } => match key {
+                KeyCode::R => self.randomize_point(),
+                KeyCode::A => self.add_point(),
+                KeyCode::D => self.delete_point(),
+                KeyCode::T => self.toggle_point(),
+                KeyCode::PageUp => {
+                    self.change_weight(true);
+                }
+                KeyCode::PageDown => {
+                    self.change_weight(false);
+                }
                 KeyCode::Space => {
                     use std::fmt::Write;
                     let mut buffer = String::new();
                     write!(&mut buffer, "Matrix: {:?}\nPoints: \n", self.view).unwrap();
-                    for (i, p) in self.voronoi.vertices() {
+                    for (i, p) in self.voronoi.points() {
                         writeln!(
                             &mut buffer,
                             "\t - {i: >3}: {:?} => {:?}",
@@ -124,7 +155,13 @@ impl State {
                 KeyCode::Q => {
                     app.exit();
                 }
-                _ => return,
+                _ => {
+                    if let Some(modif) = Modifier::from_key(key) {
+                        self.mod_keys.remove(&modif);
+                    } else {
+                        return;
+                    }
+                }
             },
             _ => return,
         }
@@ -147,6 +184,137 @@ impl State {
 
     pub fn font(&self) -> Font {
         self.font
+    }
+
+    pub fn render_size(&self) -> UVec2 {
+        self.render_size
+    }
+
+    pub fn is_within_render(&self, p: Vec2) -> bool {
+        (0. ..self.render_size.x as f32).contains(&p.x)
+            && (0. ..self.render_size.y as f32).contains(&p.y)
+    }
+
+    fn update_hover(&mut self) {
+        let prev = self.voronoi.hovered();
+        let new = self.voronoi.hover(self.mouse_pos.map(|mouse_pos| {
+            (
+                self.view.to_math(mouse_pos),
+                HOVER_MAX_DIST * self.view.to_math_ratio(),
+            )
+        }));
+        if prev != new {
+            debug!("Hovered: {prev:?} to {new:?}");
+        }
+    }
+
+    fn randomize_point(&mut self) {
+        info!("Generating random diagram");
+        const RANDOM_COUNT: RangeInclusive<u8> = 3..=4;
+        const RANDOM_SPACE: Range<i32> = -10..10;
+        const RANDOM_SPACE_FACTOR: f32 = 10.;
+        const RANDOM_WEIGHT: [u32; 9] = [100, 50, 70, 90, 110, 120, 150, 200, 300];
+        const RANDOM_WEIGHT_WEIGHTS: [u32; 9] = [10, 1, 2, 2, 2, 2, 1, 1, 1];
+        const NAMES: Range<char> = 'A'..'Z';
+        let rng = &mut thread_rng();
+        let weight_index = WeightedIndex::new(RANDOM_WEIGHT_WEIGHTS).unwrap();
+
+        self.voronoi.clear();
+        for (_, name) in zip(0..RANDOM_COUNT.sample_single(rng), NAMES) {
+            loop {
+                let p = WeightedPoint::new(
+                    name.to_string(),
+                    Vec2::new(
+                        RANDOM_SPACE.sample_single(rng) as f32 / RANDOM_SPACE_FACTOR,
+                        RANDOM_SPACE.sample_single(rng) as f32 / RANDOM_SPACE_FACTOR,
+                    ),
+                    RANDOM_WEIGHT[weight_index.sample(rng)],
+                );
+                if self.voronoi.add(p).is_ok() {
+                    break;
+                }
+            }
+        }
+        self.view = ViewPort::enclosing(
+            self.voronoi.points().iter().map(|(_, v)| v),
+            self.render_size.as_vec2(),
+            2.,
+        );
+        self.update_hover();
+    }
+
+    fn add_point(&mut self) {
+        if let Some(pos) = self.mouse_pos {
+            let name = ('A'..='Z')
+                .chain('α'..='ω')
+                .find(|n| {
+                    !self
+                        .voronoi
+                        .points()
+                        .iter()
+                        .any(|(_, v)| v.name.as_bytes() == &[*n as u8])
+                })
+                .unwrap()
+                .to_string();
+            self.voronoi
+                .add(WeightedPoint::new(name, self.view.to_math(pos), 100))
+                .unwrap()
+        }
+        self.update_hover();
+    }
+
+    fn delete_point(&mut self) {
+        if let Hovered::Point(i) = self.voronoi.hovered() {
+            if let Err(e) = self.voronoi.remove(i) {
+                error!("{:#}", e);
+            }
+        }
+        self.update_hover();
+    }
+
+    fn toggle_point(&mut self) {
+        if let Hovered::Point(i) = self.voronoi.hovered() {
+            if let Err(e) = self.voronoi.modify(i, |p| p.enabled ^= true) {
+                error!("{e:#}");
+            }
+        }
+        self.update_hover();
+    }
+
+    fn change_weight(&mut self, incr: bool) {
+        let hovered = self.voronoi.hovered();
+        debug!("Changing weight of: {hovered:?}");
+        if let Hovered::Point(i) = hovered {
+            const SCROLL_WEIGHT_DIFF: i32 = 5;
+            const SCROLL_WEIGHT_RANGE: Range<i32> = 10..500;
+            let diff = if incr { 1 } else { -1 } * SCROLL_WEIGHT_DIFF;
+            if let Err(e) = self.voronoi.modify(i, |p| {
+                p.weight = (p.weight as i32 + diff)
+                    .clamp(SCROLL_WEIGHT_RANGE.start, SCROLL_WEIGHT_RANGE.end)
+                    as u32
+            }) {
+                error!("Couldn't adjust point weight: {e:#}");
+            }
+            self.update_hover();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Modifier {
+    Shift,
+    Control,
+    Alt,
+}
+
+impl Modifier {
+    fn from_key(key: &KeyCode) -> Option<Self> {
+        Some(match key {
+            KeyCode::LShift | KeyCode::RShift => Modifier::Shift,
+            KeyCode::LControl | KeyCode::RControl => Modifier::Control,
+            KeyCode::LAlt | KeyCode::RAlt => Modifier::Alt,
+            _ => return None,
+        })
     }
 }
 

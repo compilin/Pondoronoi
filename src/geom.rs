@@ -5,8 +5,9 @@ use anyhow::Error;
 use notan::draw::DrawShapes;
 use notan::log::*;
 use notan::math::Vec2;
+use std::borrow::Cow;
 use std::f32::consts::{PI, TAU};
-use std::ops::{DerefMut, Mul};
+use std::ops::{DerefMut, Div, Mul};
 
 pub trait Hoverable {
     fn distance(&self, point: Vec2) -> f32;
@@ -35,20 +36,24 @@ pub trait Intersectable {
 #[derive(Debug, Clone)]
 pub struct WeightedPoint {
     pub name: String,
-    pub label: String,
     pub pos: Vec2,
-    pub weight: f32,
+    pub weight: u32,
+    pub enabled: bool,
 }
 
 impl WeightedPoint {
-    pub fn new(name: impl ToString, p: Vec2, weight: f32) -> WeightedPoint {
+    pub fn new(name: impl ToString, p: Vec2, weight: u32) -> WeightedPoint {
         let name = name.to_string();
         Self {
-            label: format!("{name}, {weight}"),
             name,
             pos: p,
             weight,
+            enabled: true,
         }
+    }
+
+    pub fn label(&self) -> String {
+        format!("{}, {:.2}", self.name, self.weight)
     }
 
     pub fn bisect(&self, other: &Self) -> Bisector {
@@ -60,12 +65,12 @@ impl WeightedPoint {
                 vec: (-self.pos + other.pos).perp().normalize(),
             }
         } else {
-            let a2 = a.powi(2);
-            let b2 = b.powi(2);
+            let a2 = a.pow(2) as f32;
+            let b2 = b.pow(2) as f32;
 
             Bisector::Circle {
                 center: self.pos + (other.pos - self.pos) * -a2 / (b2 - a2),
-                radius: self.pos.distance(other.pos) * (a * b) / (b2 - a2).abs(),
+                radius: self.pos.distance(other.pos) * (a * b) as f32 / (b2 - a2).abs(),
             }
         }
     }
@@ -99,6 +104,85 @@ pub enum Bisector {
     Circle { center: Vec2, radius: f32 },
 }
 
+impl Bisector {
+    /// Calculates intersection between two bisectors. Regardless of combination of types there can
+    /// only be zero, one or two bisectors, hence the return type. The returned points are expressed
+    /// as (f32, f32), corresponding to the respective multipliers to apply to self and other to
+    /// obtain the actual points
+    pub fn intersect(self, other: Bisector) -> Option<((f32, f32), Option<(f32, f32)>)> {
+        match (self, other) {
+            (Bisector::Line { orig: o1, vec: v1 }, Bisector::Line { orig: o2, vec: v2 }) => {
+                let denom = v1.perp_dot(v2);
+                if denom.abs() <= f32::EPSILON {
+                    // Parallel
+                    None
+                } else {
+                    let mul =
+                        |v: Vec2, odif: Vec2, denom: f32| (v.y * odif.x + v.x * -odif.y) / denom;
+                    let mul_v1 = mul(v2, o2 - o1, denom);
+                    let mul_v2 = mul(v1, o1 - o2, -denom);
+                    Some(((mul_v1, mul_v2), None))
+                }
+            }
+            (Bisector::Line { .. }, Bisector::Circle { .. }) => other
+                .intersect(self)
+                .map(|(seg, other)| ((seg.1, seg.0), other.map(|seg| (seg.1, seg.0)))),
+            (circle @ Bisector::Circle { center, radius }, line @ Bisector::Line { orig, vec }) => {
+                let cent_proj = orig + (center - orig).project_onto_normalized(vec);
+                let dist = cent_proj.distance(center);
+                if dist - radius < f32::EPSILON {
+                    let proj_agl = self / cent_proj;
+                    if (dist - radius).abs() < f32::EPSILON {
+                        // Tangent
+                        let agl = circle / cent_proj;
+                        let seg = line / cent_proj;
+                        Some(((agl, seg), None))
+                    } else {
+                        let agl = (dist / radius).acos();
+                        let agl = (proj_agl - agl, proj_agl + agl);
+                        let seg = (line / (circle * agl.0), line / (circle * agl.1));
+                        Some(((agl.0, seg.0), Some((agl.1, seg.1))))
+                    }
+                } else {
+                    None
+                }
+            }
+            (
+                circle1 @ Bisector::Circle {
+                    center: c1,
+                    radius: r1,
+                },
+                circle2 @ Bisector::Circle {
+                    center: c2,
+                    radius: r2,
+                },
+            ) => {
+                let dist = c1.distance(c2);
+                let diff = (dist - r1.max(r2)).abs() - r1.min(r2);
+
+                if diff < f32::EPSILON {
+                    let x = dist / (2. * r1) + (r1.powi(2) - r2.powi(2)) / (2. * r1 * dist);
+                    let vec = (-c1 + c2) * r1 / dist;
+                    let p = c1 + vec * x;
+                    if diff > -f32::EPSILON {
+                        Some(((circle1 / p, circle2 / p), None))
+                    } else {
+                        let y = (1. - x.powi(2)).sqrt();
+                        assert!(y.is_finite());
+                        let points = (p + vec.perp() * y, p - vec.perp() * y);
+                        Some((
+                            (circle1 / points.0, circle2 / points.0),
+                            Some((circle1 / points.1, circle2 / points.1)),
+                        ))
+                    }
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
 impl Mul<f32> for Bisector {
     type Output = Vec2;
 
@@ -108,6 +192,21 @@ impl Mul<f32> for Bisector {
         match self {
             Bisector::Line { orig, vec } => orig + vec * rhs,
             Bisector::Circle { center, radius } => center + Vec2::from_angle(rhs) * radius,
+        }
+    }
+}
+
+impl Div<Vec2> for Bisector {
+    type Output = f32;
+
+    // Returns the f32 that, multiplied by self, would produce the closest point to rhs
+    fn div(self, rhs: Vec2) -> Self::Output {
+        match self {
+            Bisector::Line { orig, vec } => (rhs - orig).dot(vec),
+            Bisector::Circle { center, .. } => {
+                let vec = rhs - center;
+                f32::atan2(vec.y, vec.x)
+            }
         }
     }
 }
@@ -173,7 +272,22 @@ impl BisectorSegments {
                 } else {
                     full_circle.stroke(skel_stroke_width).stroke_color(skel_col);
                     drop(full_circle);
-                    for (min, max) in &self.segments {
+                    let segments = if !state.is_within_render(center) {
+                        // Circle is significantly outside rendered area. Trim min-max angle
+                        let mid = state.view().to_math(state.render_size().as_vec2() / 2.);
+                        let mid_agl = self.base / (mid);
+                        let half_arc = ((mid.length() + 10.) / radius).min(PI / 2.);
+                        let arc = Self::mod_arc(mid_agl + half_arc, mid_agl - half_arc);
+                        trace!("Only rendering circle outside of arc {arc:?}");
+                        let mut clipped = self.clone();
+                        clipped.remove((Some(arc.0), Some(arc.1)));
+                        Cow::from(clipped.segments)
+                    } else {
+                        Cow::from(&self.segments)
+                    };
+
+                    for (min, max) in segments.iter() {
+                        // TODO limit if circle goes outside screen edges
                         if let (Some(min), Some(max)) = (*min, *max) {
                             // Approximate angle to increment to advance ~1px on screen
                             let pix_agl = state.view().to_math_ratio() / radius;
@@ -214,7 +328,10 @@ impl BisectorSegments {
         } else {
             let fmin = min.unwrap_or(f32::NEG_INFINITY);
             let fmax = max.unwrap_or(f32::INFINITY);
-            assert!(fmin <= fmax);
+            assert!(
+                fmin <= fmax,
+                "Remove received invalid arc: ({min:?},{max:?})"
+            );
             match self.base {
                 Bisector::Circle { .. } => {
                     self.check_seg_valid((min, max)).unwrap();
@@ -223,54 +340,48 @@ impl BisectorSegments {
                         let (smin, smax) = &mut self.segments[i];
                         // (min, max) can't be (None, None) nor half-open, so we know it's fully-closed
                         i += if smin.is_some() && smax.is_some() {
-                            let (mut sfmin, mut sfmax) = (smin.unwrap(), smax.unwrap());
+                            let (sfmin, sfmax) = (smin.as_mut().unwrap(), smax.as_mut().unwrap());
                             #[inline]
                             fn is_within(it: f32, (min, max): (f32, f32)) -> bool {
                                 (it - min).rem_euclid(TAU) < (max - min)
                             }
 
-                            let smin_in_rem = is_within(sfmin, (fmin, fmax));
-                            let smax_in_rem = is_within(sfmax, (fmin, fmax));
-                            let min_in_segment = is_within(fmin, (sfmin, sfmax));
-                            println!("min: {fmin}, max: {fmax}, sfmin: {sfmin}, sfmax: {sfmax}, smin_in_rem: {smin_in_rem}, smax_in_rem: {smax_in_rem}, {min_in_segment}");
+                            let smin_in_rem = is_within(*sfmin, (fmin, fmax));
+                            let smax_in_rem = is_within(*sfmax, (fmin, fmax));
+                            let min_in_segment = is_within(fmin, (*sfmin, *sfmax));
                             let i2 = if smin_in_rem {
                                 if smax_in_rem {
                                     if min_in_segment {
-                                        // Removal and segment are negatively included within each other:
-                                        // trimming both ends
-                                        (sfmin, sfmax) = Self::mod_arc(fmax, fmin);
+                                        trace!("Removal and segment are negatively included within each other: trimming both ends");
+                                        (*sfmin, *sfmax) = Self::mod_arc(fmax, fmin);
                                         1
                                     } else {
-                                        // Arc is fully within removal: removing
+                                        trace!("Arc is fully within removal: removing");
                                         self.segments.remove(i);
                                         0
                                     }
                                 } else {
-                                    // Start of arc is within removal
-                                    (sfmin, sfmax) = Self::mod_arc(fmax, sfmax);
+                                    trace!("Start of arc is within removal");
+                                    (*sfmin, *sfmax) = Self::mod_arc(fmax, *sfmax);
                                     1
                                 }
                             } else if smax_in_rem {
-                                // End of arc is within removal
-                                sfmax = Self::mod_arc(sfmin, fmin).1;
+                                trace!("End of arc is within removal");
+                                *sfmax = Self::mod_arc(*sfmin, fmin).1;
                                 1
                             } else if min_in_segment {
-                                // Removal is fully within the arc: splitting
-                                let (newmin, newmax) = Self::mod_arc(fmax, sfmax);
-                                sfmax = Self::mod_arc(sfmin, fmin).1;
-                                println!("seg: ({sfmin}, {sfmax}), newseg: ({newmin}, {newmax})");
+                                trace!("Removal is fully within the arc: splitting");
+                                let (newmin, newmax) = Self::mod_arc(fmax, *sfmax);
+                                *sfmax = Self::mod_arc(*sfmin, fmin).1;
                                 self.segments.insert(i + 1, (Some(newmin), Some(newmax)));
                                 2
                             } else {
-                                // No intersection
+                                trace!("No intersection");
                                 1
                             };
-                            debug_assert!(sfmin <= sfmax);
-                            debug_assert!((sfmin, sfmax) == Self::mod_arc(sfmin, sfmax));
-                            self.segments[i] = (Some(sfmin), Some(sfmax));
                             i2
                         } else if smin.is_none() && smax.is_none() {
-                            // Removing an arc from a full circle: making it the inverse arc
+                            trace!("Removing an arc from a full circle: making it the inverse arc");
                             let (sfmin, sfmax) = Self::mod_arc(fmax, fmin + TAU);
                             *smin = Some(sfmin);
                             *smax = Some(sfmax);
@@ -288,15 +399,15 @@ impl BisectorSegments {
                         let sfmax = smax.unwrap_or(f32::INFINITY);
 
                         i += if sfmin >= fmax || sfmax <= fmin {
-                            // No intersection
+                            trace!("No intersection");
                             1
                         } else if sfmin < fmin {
                             if sfmax <= fmax {
-                                // End of segment is within removal
+                                trace!("End of segment is within removal");
                                 *smax = min;
                                 1
                             } else {
-                                // Removal is fully within segment: splitting
+                                trace!("Removal is fully within segment: splitting");
                                 let newseg = (max, *smax);
                                 *smax = min;
                                 self.segments.insert(i + 1, newseg);
@@ -305,11 +416,11 @@ impl BisectorSegments {
                         } else {
                             // sfmin < fmax
                             if sfmax <= fmax {
-                                // Segment fully within removal: deleting
+                                trace!("Segment fully within removal: deleting");
                                 self.segments.remove(i);
                                 0
                             } else {
-                                // Start of segment is within removal
+                                trace!("Start of segment is within removal");
                                 *smin = max;
                                 1
                             }
@@ -317,10 +428,16 @@ impl BisectorSegments {
                     }
                 }
             }
-            debug_assert!(self
-                .segments
-                .iter()
-                .all(|(min, max)| min.map_or(true, |min| max.map_or(true, |max| min <= max))));
+            self.segments.iter().for_each(|(min, max)| {
+                min.map(|min| {
+                    max.map(|max| {
+                        debug_assert!(
+                            min <= max,
+                            "Segment doesn't satisfy min<=max: ({min}, {max})"
+                        )
+                    })
+                });
+            });
         }
     }
 
@@ -347,6 +464,12 @@ impl BisectorSegments {
 
     pub fn base(&self) -> &Bisector {
         &self.base
+    }
+
+    fn segname(a: &String, b: &String) -> String {
+        let mut v = [a.as_str(), b.as_str()];
+        v.sort();
+        v.concat()
     }
 }
 
@@ -396,167 +519,231 @@ impl Intersectable for BisectorSegments {
     ) {
         let mut seg1_2_rem = Vec::new();
         let mut seg1_3_rem = Vec::new();
+        // Lambda for lazy computation, as we have one branch where it is not used
+        let inter = || edge1_2.base.intersect(edge1_3.base);
         match (edge1_2.base, edge1_3.base) {
             (
                 b1 @ Bisector::Line { orig: o1, vec: v1 },
                 b2 @ Bisector::Line { orig: o2, vec: v2 },
             ) => {
-                let denom = v1.perp_dot(v2);
-                if denom.abs() <= f32::EPSILON {
-                    // Parallel
-                    trace!(
-                        "intersect: Line({}{})/Line({}{}) = Parallel",
-                        p1.name,
-                        p2.name,
-                        p1.name,
-                        p3.name
-                    );
-                } else {
-                    let mul =
-                        |v: Vec2, odif: Vec2, denom: f32| (v.y * odif.x + v.x * -odif.y) / denom;
-                    #[inline]
-                    fn get_seg(v1: Vec2, mul: f32, pdif: Vec2) -> Segment {
-                        // Intersection point, expressed as a factor of v1 from o1
-                        if pdif.dot(v1) < 0. {
-                            (Some(mul), None)
-                        } else {
-                            (None, Some(mul))
+                match inter() {
+                    Some((_, Some(_))) => panic!(),
+                    Some(((mul_e1, mul_e2), None)) => {
+                        #[inline]
+                        fn get_seg(v1: Vec2, mul: f32, pdif: Vec2) -> Segment {
+                            // Intersection point, expressed as a factor of v1 from o1
+                            if pdif.dot(v1) < 0. {
+                                (Some(mul), None)
+                            } else {
+                                (None, Some(mul))
+                            }
                         }
+                        let p = b1 * mul_e1;
+                        let dist_check = p.distance(b2 * mul_e2);
+                        debug_assert!(
+                            dist_check <= f32::EPSILON,
+                            "dist_check ({dist_check}) should be <= f32::EPSILON"
+                        );
+                        trace!(
+                            "Intersection Line({}{})/Line({}{}) => {p}",
+                            p1.name,
+                            p2.name,
+                            p1.name,
+                            p3.name
+                        );
+                        seg1_2_rem.push(get_seg(v1, mul_e1, -p3.pos + p1.pos));
+                        seg1_3_rem.push(get_seg(v2, mul_e2, -p2.pos + p1.pos));
                     }
-                    let mul_v1 = mul(v2, o2 - o1, denom);
-                    let mul_v2 = mul(v1, o1 - o2, -denom);
-                    let p = b1 * mul_v1;
-                    debug_assert!(p.distance(b2 * mul_v2) <= f32::EPSILON);
-                    trace!(
-                        "Intersection Line({}{})/Line({}{}) => {p}",
-                        p1.name,
-                        p2.name,
-                        p1.name,
-                        p3.name
-                    );
-                    seg1_2_rem.push(get_seg(v1, mul_v1, -p3.pos + p1.pos));
-                    seg1_3_rem.push(get_seg(v2, mul_v2, -p2.pos + p1.pos));
+                    None => {
+                        // Parallel
+                        let dot1 = v1.perp_dot(-o2 + p1.pos);
+                        let dot2 = v1.perp_dot(-o1 + p1.pos);
+                        if dot1 * dot2 >= 0. {
+                            // One line is behind the other relatively to p1
+                            if dot1.abs() > dot2.abs() {
+                                seg1_2_rem.push((None, None));
+                            } else {
+                                seg1_3_rem.push((None, None));
+                            }
+                        } // else p1 is between the two lines: n
+                        trace!(
+                            "intersect: Line({})/Line({}) = Parallel",
+                            Self::segname(&p1.name, &p2.name),
+                            Self::segname(&p1.name, &p3.name)
+                        );
+                    }
                 }
             }
             (Bisector::Line { .. }, Bisector::Circle { .. }) => {
                 return Self::intersect(p1, p3, p2, edge1_3, edge1_2);
             }
-            (circle @ Bisector::Circle { center, radius }, Bisector::Line { orig, vec }) => {
+            (circle @ Bisector::Circle { center, .. }, Bisector::Line { orig, vec }) => {
                 let cent_proj = orig + (center - orig).project_onto_normalized(vec);
-                let dist = cent_proj.distance(center);
-                if (dist / radius - 1.).abs() <= f32::EPSILON {
-                    // Tangent TODO
-                    // Some((cent_proj, None));
-                } else if dist < radius {
-                    let proj_agl = (cent_proj.y - center.y).atan2(cent_proj.x - center.x);
-                    let agl = (dist / radius).acos();
-                    let agl = (proj_agl + agl, proj_agl - agl);
-                    let inter = (circle * agl.0, circle * agl.1);
-                    {
-                        assert!((-inter.0 + inter.1).dot(-center + cent_proj) <= f32::EPSILON);
-                        let mut agl = Self::mod_arc(agl.0, agl.1);
-                        // the center of the circle and p1 are on the same side of the line
-                        let cp_same_side =
-                            vec.perp_dot(-orig + center) * vec.perp_dot(-orig + p1.pos) >= 0.;
-                        // the arg from agl.0 to agl.1 is bigger than agl.1 to agl.0
-                        let is_big_arc = (agl.1 - agl.0) > PI;
-
-                        if is_big_arc == cp_same_side {
-                            // If we have the big arc and need the little one, or vice versa
-                            agl = Self::mod_arc(agl.1, agl.0);
-                        };
-                        seg1_2_rem.push((Some(agl.0), Some(agl.1)));
-                    }
-                    {
-                        let inter = ((inter.0 - orig).dot(vec), (inter.1 - orig).dot(vec));
-                        let inter = (Some(inter.0.min(inter.1)), Some(inter.0.max(inter.1)));
-                        if p1.weight > p2.weight {
-                            // Remove the inner circle
-                            seg1_3_rem.push(inter);
-                        } else {
-                            seg1_3_rem.push((None, inter.0));
-                            seg1_3_rem.push((inter.1, None));
+                // the center of the circle and p1 are on the same side of the line
+                let cp_same_side =
+                    vec.perp_dot(-orig + center) * vec.perp_dot(-orig + p1.pos) >= 0.;
+                match inter() {
+                    Some(((mul1_e1, mul1_e2), Some((mul2_e1, mul2_e2)))) => {
+                        let agl = (mul1_e1, mul2_e1);
+                        let inter = (circle * agl.0, circle * agl.1);
+                        {
+                            let agl_check = (-inter.0 + inter.1)
+                                .angle_between(-center + cent_proj)
+                                .abs()
+                                - PI / 2.;
+                            debug_assert!(
+                                agl_check / TAU <= f32::EPSILON,
+                                "Angle between (inter.0, inter.1) and (center, cent_proj) = {agl_check} (should be ~=0)");
+                            let mut agl = Self::mod_arc(agl.0, agl.1);
+                            // the arg from agl.0 to agl.1 is bigger than agl.1 to agl.0
+                            let is_big_arc = (agl.1 - agl.0) > PI;
+                            if is_big_arc == cp_same_side {
+                                // If we have the big arc and need the little one, or vice versa
+                                agl = Self::mod_arc(agl.1, agl.0);
+                            };
+                            seg1_2_rem.push((Some(agl.0), Some(agl.1)));
                         }
+                        {
+                            let inter = (mul1_e2.min(mul2_e2), mul1_e2.max(mul2_e2));
+                            let inter = (Some(inter.0), Some(inter.1));
+                            if p1.weight > p2.weight {
+                                // Remove the inner circle
+                                seg1_3_rem.push(inter);
+                            } else {
+                                seg1_3_rem.push((None, inter.0));
+                                seg1_3_rem.push((inter.1, None));
+                            }
+                        }
+                    }
+                    Some(((_mul_e1, _mul_e2), None)) => {
+                        // TODO tangent
+                    }
+                    None => {
+                        // No intersection or tangent
+                        if p1.weight < p2.weight {
+                            // Keeping the inside of the circle = removing the whole other line
+                            seg1_3_rem.push((None, None));
+                        } else if !cp_same_side {
+                            // The circle is on the other side of the line : removing it
+                            seg1_2_rem.push((None, None))
+                        } // else p1 is between the line and the circle: do nothing
                     }
                 }
             }
             (
-                Bisector::Circle {
+                cir1 @ Bisector::Circle {
                     center: c1,
                     radius: r1,
                 },
-                Bisector::Circle {
+                cir2 @ Bisector::Circle {
                     center: c2,
                     radius: r2,
                 },
             ) => {
-                let dist = c1.distance(c2);
-                let rs = r1 + r2;
-                if ((dist - r1).abs() - r2).abs() / rs <= f32::EPSILON {
-                    // Tengent
-                    // if r1 < r2 {
-                    //     // let vec = c1 - c2;
-                    //     // Some((c2 + vec * (r2 / vec.length()), None));
-                    // } else {
-                    //     // let vec = c2 - c1;
-                    //     // Some((c1 + vec * (r1 / vec.length()), None));
-                    // }
-                } else if dist < rs {
-                    let x = dist / (2. * r1) + (r1.powi(2) - r2.powi(2)) / (2. * r1 * dist);
-                    let vec = (-c1 + c2) * r1 / dist;
-                    let p = c1 + vec * x;
-                    let y = (1. - x.powi(2)).sqrt();
-                    assert!(y.is_finite());
-                    let points = (p + vec.perp() * y, p - vec.perp() * y);
-                    let same_side = (-c1 + p).dot(-c2 + p) > 0.;
-                    fn make_arc(
-                        (p1, p2): (Vec2, Vec2),
-                        (w1, w2): (f32, f32),
-                        center: Vec2,
-                        same_side: bool,
-                    ) -> Segment {
-                        let agl = (-center + p1, -center + p2);
-                        let mut agl = BisectorSegments::mod_arc(
-                            agl.0.y.atan2(agl.0.x),
-                            agl.1.y.atan2(agl.1.x),
-                        );
-                        let small_arc = w2 <= w1 || !same_side;
-                        if (agl.1 - agl.0 > PI) == small_arc {
-                            agl = BisectorSegments::mod_arc(agl.1, agl.0);
+                match inter() {
+                    Some(((mul1_e1, mul1_e2), Some((mul2_e1, mul2_e2)))) => {
+                        fn make_arc(
+                            inside: bool,
+                            (m1, m2): (f32, f32),
+                            cir: Bisector,
+                            cnt: Vec2,
+                            rad: f32,
+                        ) -> Segment {
+                            let (m1, m2) = BisectorSegments::mod_arc(m1, m2);
+                            let arc = if inside == ((cir * ((m1 + m2) / 2.)).distance(cnt) <= rad) {
+                                // if (p1 is inside e1_2) == (e2 arc is inside e1), flip it
+                                BisectorSegments::mod_arc(m2, m1)
+                            } else {
+                                (m1, m2)
+                            };
+                            (Some(arc.0), Some(arc.1))
                         }
-                        (Some(agl.0), Some(agl.1))
+                        seg1_2_rem.push(make_arc(
+                            p1.weight < p3.weight,
+                            (mul1_e1, mul2_e1),
+                            cir1,
+                            c2,
+                            r2,
+                        ));
+                        seg1_3_rem.push(make_arc(
+                            p1.weight < p2.weight,
+                            (mul1_e2, mul2_e2),
+                            cir2,
+                            c1,
+                            r1,
+                        ));
                     }
-                    seg1_2_rem.push(make_arc(points, (p1.weight, p2.weight), c1, same_side));
-                    seg1_3_rem.push(make_arc(points, (p1.weight, p3.weight), c2, same_side));
-                    // Some((p + vec.perp() * y, Some(p - vec.perp() * y)));
+                    Some(((_mul_e1, _mul_e2), None)) => {
+                        // TODO tangent
+                    }
+                    None => {}
+                }
+                let dist = c1.distance(c2);
+                let diff = (dist - r1.max(r2)).abs() - r1.min(r2);
+
+                if diff < 0. {
+                } else {
+                    // No intersection
+                    let nested = dist < r1.max(r2);
+                    match (p1.weight < p2.weight, p1.weight < p3.weight) {
+                        (true, true) => {
+                            // p1 is inside both circles. Remove the outer one
+                            assert!(nested);
+                            if p2.weight > p3.weight {
+                                &mut seg1_2_rem
+                            } else {
+                                &mut seg1_3_rem
+                            }
+                            .push((None, None))
+                        }
+                        (false, false) if nested => {
+                            // Remove the smaller circle
+                            if p2.weight < p3.weight {
+                                &mut seg1_2_rem
+                            } else {
+                                &mut seg1_3_rem
+                            }
+                            .push((None, None))
+                        } // Else do nothing
+                        _ => {} // p1 is between one circle and outside the other. Do nothing
+                    }
+                    if dist < r1.max(r2) {
+                        // One of the circle is inside the other
+                    }
                 }
             }
         };
+        let seg1name = Self::segname(&p1.name, &p2.name);
+        let seg2name = Self::segname(&p1.name, &p3.name);
+        debug!(
+            "Intersecting around {} of bisectors {seg1name} and {seg2name}",
+            p1.name
+        );
 
         fn remove_segs(
             mut tgt: impl DerefMut<Target = BisectorSegments>,
             segs: Vec<Segment>,
-            p1: &WeightedPoint,
-            p2: &WeightedPoint,
+            segname: &String,
         ) {
             let segtype = match &tgt.base {
                 Bisector::Line { .. } => "Line",
                 Bisector::Circle { .. } => "Circle",
             };
             if segs.is_empty() {
-                trace!("Not removing any part of {segtype} {}{}", p1.name, p2.name)
-            }
-            for seg in segs {
-                let segs = tgt.segments.clone();
-                tgt.remove(seg);
+                trace!("Not removing any part of {segtype} {segname}")
+            } else {
+                let prev = tgt.segments.clone();
+                for seg in &segs {
+                    tgt.remove(*seg);
+                }
                 debug!(
-                    "Removing {seg:?} from {segtype} {}{}: {:?} => {:?}",
-                    p1.name, p2.name, segs, tgt.segments
+                    "Removing {segs:?} from {segtype} {segname}: {:?} => {:?}",
+                    prev, tgt.segments
                 );
             }
         }
-        remove_segs(edge1_2, seg1_2_rem, p1, p2);
-        remove_segs(edge1_3, seg1_3_rem, p1, p3);
+        remove_segs(edge1_2, seg1_2_rem, &seg1name);
+        remove_segs(edge1_3, seg1_3_rem, &seg2name);
     }
 }
 
