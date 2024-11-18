@@ -14,12 +14,19 @@ use std::ops::{Range, RangeInclusive};
 pub struct State {
     voronoi: Voronoi,
     view: ViewPort,
-    mouse_drag: Option<DVec2>,
+    mouse_drag: Drag,
     mouse_pos: Option<DVec2>,
     mod_keys: HashSet<Modifier>,
     font: Font,
     render_size: UVec2,
     rendered: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Drag {
+    None,
+    Screen(DVec2),
+    Point { id: usize, delta: DVec2 },
 }
 
 impl State {
@@ -29,7 +36,7 @@ impl State {
             view: ViewPort::default(),
             font,
             mouse_pos: None,
-            mouse_drag: None,
+            mouse_drag: Drag::None,
             mod_keys: HashSet::new(),
             render_size: (0, 0).into(),
             rendered: false,
@@ -83,18 +90,38 @@ impl State {
                 button: MouseButton::Left,
                 x,
                 y,
-            } if self.mouse_drag.is_none() => {
-                self.mouse_drag = Some(self.view.to_math(DVec2::new(x as f64, y as f64)))
+            } if self.mouse_drag == Drag::None => {
+                let pos = self.view.to_math(DVec2::new(x as f64, y as f64));
+                if self.mod_keys.contains(&Modifier::Control) {
+                    if let Hovered::Point(i) = self.voronoi.hovered() {
+                        let p = self.voronoi.points().get(&i).unwrap();
+                        self.mouse_drag = Drag::Point {
+                            id: i,
+                            delta: pos - p.pos,
+                        };
+                    }
+                } else {
+                    self.mouse_drag = Drag::Screen(pos)
+                }
             }
-            Event::MouseUp { .. } if self.mouse_drag.is_some() => {
-                self.mouse_drag = None;
+            Event::MouseUp { .. } if self.mouse_drag != Drag::None => {
+                self.mouse_drag = Drag::None;
             }
             Event::MouseEnter { x, y } | Event::MouseMove { x, y } => {
                 let mouse_pos = DVec2::new(x as f64, y as f64);
                 self.mouse_pos = Some(mouse_pos);
-                if let Some(pos) = self.mouse_drag {
-                    let o = self.view.to_screen(pos);
-                    self.view.move_screen(mouse_pos - o);
+                match self.mouse_drag {
+                    Drag::Screen(pos) => {
+                        let o = self.view.to_screen(pos);
+                        self.view.move_screen(mouse_pos - o);
+                    }
+                    Drag::Point { id, delta } => {
+                        let pos = self.view.to_math(mouse_pos) + delta;
+                        if let Err(e) = self.voronoi.modify(id, |p| p.pos = pos) {
+                            error!("Couldn't move point: {e}");
+                        }
+                    }
+                    _ => {}
                 }
                 self.update_hover();
                 return;
