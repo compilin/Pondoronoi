@@ -45,7 +45,7 @@ impl Voronoi {
         if let Some((_, p)) = self
             .points
             .iter()
-            .find(|(_, p)| p.name == point.name || p.pos.distance(point.pos) < f32::EPSILON)
+            .find(|(_, p)| p.name == point.name || p.pos.distance(point.pos) < f64::EPSILON)
         {
             return if p.name == point.name {
                 Err(Error::msg("A point with that name already exists"))
@@ -155,7 +155,7 @@ impl Voronoi {
         let inact = Color::from_hex(INACTIVE_COLOR);
 
         for (i, p) in state.voronoi().points().iter() {
-            let Vec2 { x, y } = state.view().to_screen(p.pos);
+            let Vec2 { x, y } = state.view().to_screen(p.pos).as_vec2();
             let (starcol, textcol) = if (i, p).is_active(&state.voronoi().hovered) {
                 (fg, fg)
             } else {
@@ -189,11 +189,11 @@ impl Voronoi {
         &self.edges
     }
 
-    pub fn hover(&mut self, pos: Option<(Vec2, f32)>) -> Hovered {
+    pub fn hover(&mut self, pos: Option<(DVec2, f64)>) -> Hovered {
         fn get_hovers<H: Hoverable>(
             it: impl IntoIterator<Item = H>,
-            pos: Vec2,
-        ) -> impl Iterator<Item = (Hovered, u16, f32)> {
+            pos: DVec2,
+        ) -> impl Iterator<Item = (Hovered, u16, f64)> {
             it.into_iter()
                 .map(move |pt| (pt.hover(), H::priority(), pt.distance(pos)))
         }
@@ -202,7 +202,7 @@ impl Voronoi {
                 get_hovers(&self.points, pos)
                     .chain(get_hovers(&self.edges, pos))
                     .filter(|m| m.2 <= max_dist)
-                    .min_by(|va, vb| u16::cmp(&va.1, &vb.1).then(f32::total_cmp(&va.2, &vb.2)))
+                    .min_by(|va, vb| u16::cmp(&va.1, &vb.1).then(f64::total_cmp(&va.2, &vb.2)))
             })
             .map(|m| m.0)
             .unwrap_or(Hovered::None);

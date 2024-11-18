@@ -5,7 +5,7 @@ use app::State;
 pub use notan::draw::*;
 pub use notan::log;
 use notan::log::{debug, trace};
-use notan::math::Vec2;
+use notan::math::{DVec2, Vec2};
 pub use notan::prelude::*;
 use std::env;
 use std::ops::RangeInclusive;
@@ -66,16 +66,16 @@ fn create_voronoi() -> Result<Voronoi, Error> {
     let points = vec![
         // // Equilateral triangle
         // WeightedPoint::new("A", Vec2::new(0., 1.), 1.),
-        // WeightedPoint::new("B", Vec2::new(f32::sqrt(2.), -f32::sqrt(2.)), 1.),
-        // WeightedPoint::new("C", Vec2::new(-f32::sqrt(2.), -f32::sqrt(2.)), 1.),
+        // WeightedPoint::new("B", Vec2::new(f64::sqrt(2.), -f64::sqrt(2.)), 1.),
+        // WeightedPoint::new("C", Vec2::new(-f64::sqrt(2.), -f64::sqrt(2.)), 1.),
 
         // WeightedPoint::new("A", Vec2::new(0., 0.), 1.),
         // WeightedPoint::new("B", Vec2::new(0., 1.), 2.),
         // WeightedPoint::new("C", Vec2::new(1., 1.), 1.),
         // WeightedPoint::new("D", Vec2::new(1., 0.), 2.),
-        WeightedPoint::new("A", Vec2::new(0., 0.), 100),
-        WeightedPoint::new("B", Vec2::new(1., 0.), 150),
-        WeightedPoint::new("C", Vec2::new(2., 0.), 200),
+        WeightedPoint::new("A", DVec2::new(0., 0.), 100),
+        WeightedPoint::new("B", DVec2::new(1., 0.), 150),
+        WeightedPoint::new("C", DVec2::new(2., 0.), 200),
     ];
     Voronoi::new(points)
 }
@@ -121,12 +121,12 @@ fn parse_log_level(var: Option<String>) -> Result<LogConfig, Error> {
 
 const PT_LBL_OFFSET: f32 = 5.;
 const PT_LBL_SIZE: f32 = 20.;
-const MIN_DIM: f32 = 1.;
-const SCROLL_INCREMENT: f32 = 100.;
-const ZOOM_FACTOR: f32 = 1.2;
-const ZOOM_RANGE: RangeInclusive<f32> = 0.001..=100000.;
+const MIN_DIM: f64 = 1.;
+const SCROLL_INCREMENT: f64 = 100.;
+const ZOOM_FACTOR: f64 = 1.2;
+const ZOOM_RANGE: RangeInclusive<f64> = 0.001..=100000.;
 const BG_COLOR: u32 = 0x282B30FF;
 const FG_COLOR: u32 = 0xFFFFFFFF;
 const INACTIVE_COLOR: u32 = 0x82909880;
 /// Maximum distance, in screen-space pixels, to consider an element hovered by the cursor
-const HOVER_MAX_DIST: f32 = 15.;
+const HOVER_MAX_DIST: f64 = 15.;

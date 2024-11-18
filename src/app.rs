@@ -1,11 +1,8 @@
 use crate::geom::WeightedPoint;
 use crate::log::{debug, error, info, trace};
 use crate::voronoi::{Hovered, Voronoi};
-use crate::{
-    App, AppState, Color, CreateDraw, Event, Font, Graphics, KeyCode, MouseButton, BG_COLOR,
-    DEBUG_FIX_DISPLAY_SIZE, HOVER_MAX_DIST, MIN_DIM, SCROLL_INCREMENT, ZOOM_FACTOR, ZOOM_RANGE,
-};
-use notan::math::{Affine2, UVec2, Vec2};
+use crate::*;
+use notan::math::{Affine2, DVec2, UVec2};
 use notan::random::rand::distributions::uniform::SampleRange;
 use notan::random::rand::distributions::WeightedIndex;
 use notan::random::rand::prelude::*;
@@ -17,8 +14,8 @@ use std::ops::{Range, RangeInclusive};
 pub struct State {
     voronoi: Voronoi,
     view: ViewPort,
-    mouse_drag: Option<Vec2>,
-    mouse_pos: Option<Vec2>,
+    mouse_drag: Option<DVec2>,
+    mouse_pos: Option<DVec2>,
     mod_keys: HashSet<Modifier>,
     font: Font,
     render_size: UVec2,
@@ -46,14 +43,14 @@ impl State {
             self.render_size = gfx.size().into();
             self.view = ViewPort::enclosing(
                 self.voronoi.points().iter().map(|(_, v)| v),
-                self.render_size.as_vec2(),
+                self.render_size.as_dvec2(),
                 2.,
             );
         } else {
             let size: UVec2 = gfx.size().into();
             if size != self.render_size {
-                let prev = self.render_size.as_vec2();
-                let new = size.as_vec2();
+                let prev = self.render_size.as_dvec2();
+                let new = size.as_dvec2();
                 let delta = (new - prev) / 2.;
                 self.view.move_screen(delta);
                 let zoom = new.length() / prev.length();
@@ -81,19 +78,19 @@ impl State {
 
     pub fn listener(&mut self, app: &mut App, event: Event) {
         trace!("Event: {event:?}");
-        match &event {
+        match event {
             Event::MouseDown {
                 button: MouseButton::Left,
                 x,
                 y,
             } if self.mouse_drag.is_none() => {
-                self.mouse_drag = Some(self.view.to_math(Vec2::new(*x as f32, *y as f32)))
+                self.mouse_drag = Some(self.view.to_math(DVec2::new(x as f64, y as f64)))
             }
             Event::MouseUp { .. } if self.mouse_drag.is_some() => {
                 self.mouse_drag = None;
             }
             Event::MouseEnter { x, y } | Event::MouseMove { x, y } => {
-                let mouse_pos = Vec2::new(*x as f32, *y as f32);
+                let mouse_pos = DVec2::new(x as f64, y as f64);
                 self.mouse_pos = Some(mouse_pos);
                 if let Some(pos) = self.mouse_drag {
                     let o = self.view.to_screen(pos);
@@ -109,10 +106,10 @@ impl State {
             Event::MouseWheel { delta_y, .. } => {
                 if let Some(mouse_pos) = self.mouse_pos {
                     if self.mod_keys.contains(&Modifier::Control) {
-                        self.change_weight(*delta_y > 0.);
+                        self.change_weight(delta_y > 0.);
                     } else {
-                        let scroll =
-                            (delta_y / SCROLL_INCREMENT).abs().clamp(0.25, 2.0) * delta_y.signum();
+                        let scroll = (delta_y as f64 / SCROLL_INCREMENT).abs().clamp(0.25, 2.0)
+                            * delta_y.signum() as f64;
                         let factor = ZOOM_FACTOR.powf(scroll);
                         self.view.zoom_around(factor, mouse_pos);
                         debug!("Zoom: {delta_y} => {scroll} => {}", factor);
@@ -170,8 +167,8 @@ impl State {
 
     /// Returns a value big enough to ensure that any ray starting from inside the rendered area will
     /// be rendered to the edge of the screen
-    pub fn render_edge_distance(&self) -> f32 {
-        u32::max(self.render_size.x, self.render_size.y) as f32 * 2. * self.view.to_math_ratio()
+    pub fn render_edge_distance(&self) -> f64 {
+        u32::max(self.render_size.x, self.render_size.y) as f64 * 2. * self.view.to_math_ratio()
     }
 
     pub fn view(&self) -> &ViewPort {
@@ -190,9 +187,9 @@ impl State {
         self.render_size
     }
 
-    pub fn is_within_render(&self, p: Vec2) -> bool {
-        (0. ..self.render_size.x as f32).contains(&p.x)
-            && (0. ..self.render_size.y as f32).contains(&p.y)
+    pub fn is_within_render(&self, p: DVec2) -> bool {
+        (0. ..self.render_size.x as f64).contains(&p.x)
+            && (0. ..self.render_size.y as f64).contains(&p.y)
     }
 
     fn update_hover(&mut self) {
@@ -212,10 +209,10 @@ impl State {
         info!("Generating random diagram");
         const RANDOM_COUNT: RangeInclusive<u8> = 3..=4;
         const RANDOM_SPACE: Range<i32> = -10..10;
-        const RANDOM_SPACE_FACTOR: f32 = 10.;
+        const RANDOM_SPACE_FACTOR: f64 = 10.;
         const RANDOM_WEIGHT: [u32; 9] = [100, 50, 70, 90, 110, 120, 150, 200, 300];
         const RANDOM_WEIGHT_WEIGHTS: [u32; 9] = [10, 1, 2, 2, 2, 2, 1, 1, 1];
-        const NAMES: Range<char> = 'A'..'Z';
+        const NAMES: RangeInclusive<char> = 'A'..='Z';
         let rng = &mut thread_rng();
         let weight_index = WeightedIndex::new(RANDOM_WEIGHT_WEIGHTS).unwrap();
 
@@ -224,9 +221,9 @@ impl State {
             loop {
                 let p = WeightedPoint::new(
                     name.to_string(),
-                    Vec2::new(
-                        RANDOM_SPACE.sample_single(rng) as f32 / RANDOM_SPACE_FACTOR,
-                        RANDOM_SPACE.sample_single(rng) as f32 / RANDOM_SPACE_FACTOR,
+                    DVec2::new(
+                        RANDOM_SPACE.sample_single(rng) as f64 / RANDOM_SPACE_FACTOR,
+                        RANDOM_SPACE.sample_single(rng) as f64 / RANDOM_SPACE_FACTOR,
                     ),
                     RANDOM_WEIGHT[weight_index.sample(rng)],
                 );
@@ -237,7 +234,7 @@ impl State {
         }
         self.view = ViewPort::enclosing(
             self.voronoi.points().iter().map(|(_, v)| v),
-            self.render_size.as_vec2(),
+            self.render_size.as_dvec2(),
             2.,
         );
         self.update_hover();
@@ -252,7 +249,7 @@ impl State {
                         .voronoi
                         .points()
                         .iter()
-                        .any(|(_, v)| v.name.as_bytes() == &[*n as u8])
+                        .any(|(_, v)| v.name.as_bytes() == [*n as u8])
                 })
                 .unwrap()
                 .to_string();
@@ -308,7 +305,7 @@ enum Modifier {
 }
 
 impl Modifier {
-    fn from_key(key: &KeyCode) -> Option<Self> {
+    fn from_key(key: KeyCode) -> Option<Self> {
         Some(match key {
             KeyCode::LShift | KeyCode::RShift => Modifier::Shift,
             KeyCode::LControl | KeyCode::RControl => Modifier::Control,
@@ -320,24 +317,24 @@ impl Modifier {
 
 #[derive(Debug, Clone)]
 pub struct ViewPort {
-    r: f32,
-    off: Vec2,
+    r: f64,
+    off: DVec2,
 }
 
 #[allow(dead_code)]
 impl ViewPort {
-    pub fn new(r: f32, off: Vec2) -> ViewPort {
+    pub fn new(r: f64, off: DVec2) -> ViewPort {
         Self { r, off }
     }
 
     pub fn enclosing<'a>(
         pts: impl IntoIterator<Item = &'a WeightedPoint>,
-        display: Vec2,
-        margin: f32,
+        display: DVec2,
+        margin: f64,
     ) -> Self {
         let (min, max) = pts.into_iter().map(|p| p.pos).fold(
-            (Vec2::NAN, Vec2::NAN),
-            |acc: (Vec2, Vec2), v: Vec2| {
+            (DVec2::NAN, DVec2::NAN),
+            |acc: (DVec2, DVec2), v: DVec2| {
                 if acc.0.x.is_finite() {
                     (acc.0.min(v), acc.1.max(v))
                 } else {
@@ -349,7 +346,10 @@ impl ViewPort {
         let r = (display.x / (max.x - min.x).max(MIN_DIM))
             .min(display.y / (max.y - min.y).max(MIN_DIM))
             / margin;
-        let mut ret = Self { r, off: Vec2::ZERO };
+        let mut ret = Self {
+            r,
+            off: DVec2::ZERO,
+        };
         let mid = ret.to_screen(((max.x - min.x) / 2., (max.y - min.y) / 2.));
         let viewmid = display / 2.;
         ret.move_screen(viewmid - mid);
@@ -365,19 +365,19 @@ impl ViewPort {
         ret
     }
 
-    pub fn zoom(&mut self, factor: f32) {
-        assert!(factor.abs() > f32::EPSILON);
+    pub fn zoom(&mut self, factor: f64) {
+        assert!(factor.abs() > f64::EPSILON);
         let old = self.r;
         self.r = (self.r * factor).clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end());
         debug!("zoom: {old} * {factor} = {:?}", self.r);
     }
 
-    pub fn zoomed(mut self, factor: f32) -> Self {
+    pub fn zoomed(mut self, factor: f64) -> Self {
         self.zoom(factor);
         self
     }
 
-    pub fn zoom_around(&mut self, factor: f32, center: Vec2) {
+    pub fn zoom_around(&mut self, factor: f64, center: DVec2) {
         let center_prj = self.to_math(center);
         self.zoom(factor);
         let new_center = self.to_screen(center_prj);
@@ -385,35 +385,35 @@ impl ViewPort {
     }
 
     /// Returns the scaling ratio from math to screen
-    pub fn to_screen_ratio(&self) -> f32 {
+    pub fn to_screen_ratio(&self) -> f64 {
         self.r
     }
 
     /// Projects a point from the mathematical space to the screen
-    pub fn to_screen(&self, p: impl Into<Vec2>) -> Vec2 {
-        (p.into() * Vec2::new(self.r, -self.r)) + self.off
+    pub fn to_screen(&self, p: impl Into<DVec2>) -> DVec2 {
+        (p.into() * DVec2::new(self.r, -self.r)) + self.off
     }
 
     /// Returns the scalar ratio from screen to math
-    pub fn to_math_ratio(&self) -> f32 {
+    pub fn to_math_ratio(&self) -> f64 {
         1. / self.r
     }
 
     /// Projects a point from the screen to the mathematical space
-    pub fn to_math(&self, v: Vec2) -> Vec2 {
+    pub fn to_math(&self, v: DVec2) -> DVec2 {
         let v1 = v - self.off;
-        v1 / Vec2::new(self.r, -self.r)
+        v1 / DVec2::new(self.r, -self.r)
     }
 
     /// Moves the viewport by the given delta in screen space
-    pub fn move_screen(&mut self, delta: Vec2) {
+    pub fn move_screen(&mut self, delta: DVec2) {
         let old = self.off;
         self.off += delta;
         debug!("move_screen: {old} + {delta} = {:?}", self.off);
     }
 
     /// Moves the viewport by the given delta in mathematical space
-    pub fn move_math(&mut self, delta: Vec2) {
+    pub fn move_math(&mut self, delta: DVec2) {
         self.move_screen(delta * self.r);
     }
 }
@@ -422,7 +422,7 @@ impl Default for ViewPort {
     fn default() -> Self {
         Self {
             r: 100.,
-            off: Vec2::new(0., 0.),
+            off: DVec2::new(0., 0.),
         }
     }
 }

@@ -4,13 +4,13 @@ use crate::{Color, Draw, Graphics};
 use anyhow::Error;
 use notan::draw::DrawShapes;
 use notan::log::*;
-use notan::math::Vec2;
+use notan::math::{DVec2, Vec2};
 use std::borrow::Cow;
-use std::f32::consts::{PI, TAU};
+use std::f64::consts::{PI, TAU};
 use std::ops::{DerefMut, Div, Mul};
 
 pub trait Hoverable {
-    fn distance(&self, point: Vec2) -> f32;
+    fn distance(&self, point: DVec2) -> f64;
     fn is_hovered(&self, hov: &Hovered) -> bool;
 
     fn is_active(&self, hov: &Hovered) -> bool {
@@ -36,13 +36,13 @@ pub trait Intersectable {
 #[derive(Debug, Clone)]
 pub struct WeightedPoint {
     pub name: String,
-    pub pos: Vec2,
+    pub pos: DVec2,
     pub weight: u32,
     pub enabled: bool,
 }
 
 impl WeightedPoint {
-    pub fn new(name: impl ToString, p: Vec2, weight: u32) -> WeightedPoint {
+    pub fn new(name: impl ToString, p: DVec2, weight: u32) -> WeightedPoint {
         let name = name.to_string();
         Self {
             name,
@@ -65,19 +65,19 @@ impl WeightedPoint {
                 vec: (-self.pos + other.pos).perp().normalize(),
             }
         } else {
-            let a2 = a.pow(2) as f32;
-            let b2 = b.pow(2) as f32;
+            let a2 = a.pow(2) as f64;
+            let b2 = b.pow(2) as f64;
 
             Bisector::Circle {
                 center: self.pos + (other.pos - self.pos) * -a2 / (b2 - a2),
-                radius: self.pos.distance(other.pos) * (a * b) as f32 / (b2 - a2).abs(),
+                radius: self.pos.distance(other.pos) * (a * b) as f64 / (b2 - a2).abs(),
             }
         }
     }
 }
 
 impl Hoverable for (&usize, &WeightedPoint) {
-    fn distance(&self, point: Vec2) -> f32 {
+    fn distance(&self, point: DVec2) -> f64 {
         self.1.pos.distance(point)
     }
 
@@ -100,25 +100,26 @@ impl Hoverable for (&usize, &WeightedPoint) {
 
 #[derive(Debug, Clone, Copy)]
 pub enum Bisector {
-    Line { orig: Vec2, vec: Vec2 },
-    Circle { center: Vec2, radius: f32 },
+    Line { orig: DVec2, vec: DVec2 },
+    Circle { center: DVec2, radius: f64 },
 }
 
 impl Bisector {
     /// Calculates intersection between two bisectors. Regardless of combination of types there can
     /// only be zero, one or two bisectors, hence the return type. The returned points are expressed
-    /// as (f32, f32), corresponding to the respective multipliers to apply to self and other to
+    /// as (f64, f64), corresponding to the respective multipliers to apply to self and other to
     /// obtain the actual points
-    pub fn intersect(self, other: Bisector) -> Option<((f32, f32), Option<(f32, f32)>)> {
+    #[allow(clippy::type_complexity)]
+    pub fn intersect(self, other: Bisector) -> Option<((f64, f64), Option<(f64, f64)>)> {
         match (self, other) {
             (Bisector::Line { orig: o1, vec: v1 }, Bisector::Line { orig: o2, vec: v2 }) => {
                 let denom = v1.perp_dot(v2);
-                if denom.abs() <= f32::EPSILON {
+                if denom.abs() <= f64::EPSILON {
                     // Parallel
                     None
                 } else {
                     let mul =
-                        |v: Vec2, odif: Vec2, denom: f32| (v.y * odif.x + v.x * -odif.y) / denom;
+                        |v: DVec2, odif: DVec2, denom: f64| (v.y * odif.x + v.x * -odif.y) / denom;
                     let mul_v1 = mul(v2, o2 - o1, denom);
                     let mul_v2 = mul(v1, o1 - o2, -denom);
                     Some(((mul_v1, mul_v2), None))
@@ -130,9 +131,10 @@ impl Bisector {
             (circle @ Bisector::Circle { center, radius }, line @ Bisector::Line { orig, vec }) => {
                 let cent_proj = orig + (center - orig).project_onto_normalized(vec);
                 let dist = cent_proj.distance(center);
-                if dist - radius < f32::EPSILON {
+                #[allow(clippy::float_equality_without_abs)]
+                if dist - radius < f64::EPSILON {
                     let proj_agl = self / cent_proj;
-                    if (dist - radius).abs() < f32::EPSILON {
+                    if (dist - radius).abs() < f64::EPSILON {
                         // Tangent
                         let agl = circle / cent_proj;
                         let seg = line / cent_proj;
@@ -160,11 +162,11 @@ impl Bisector {
                 let dist = c1.distance(c2);
                 let diff = (dist - r1.max(r2)).abs() - r1.min(r2);
 
-                if diff < f32::EPSILON {
+                if diff < f64::EPSILON {
                     let x = dist / (2. * r1) + (r1.powi(2) - r2.powi(2)) / (2. * r1 * dist);
                     let vec = (-c1 + c2) * r1 / dist;
                     let p = c1 + vec * x;
-                    if diff > -f32::EPSILON {
+                    if diff > -f64::EPSILON {
                         Some(((circle1 / p, circle2 / p), None))
                     } else {
                         let y = (1. - x.powi(2)).sqrt();
@@ -183,35 +185,35 @@ impl Bisector {
     }
 }
 
-impl Mul<f32> for Bisector {
-    type Output = Vec2;
+impl Mul<f64> for Bisector {
+    type Output = DVec2;
 
     /// Allows multiplying a bisector by a float to get a point corresponding to `rhs` as a multiplier if
     /// `self` is a `Line`, or an angle if `self` is a `Circle`
-    fn mul(self, rhs: f32) -> Self::Output {
+    fn mul(self, rhs: f64) -> Self::Output {
         match self {
             Bisector::Line { orig, vec } => orig + vec * rhs,
-            Bisector::Circle { center, radius } => center + Vec2::from_angle(rhs) * radius,
+            Bisector::Circle { center, radius } => center + DVec2::from_angle(rhs) * radius,
         }
     }
 }
 
-impl Div<Vec2> for Bisector {
-    type Output = f32;
+impl Div<DVec2> for Bisector {
+    type Output = f64;
 
-    // Returns the f32 that, multiplied by self, would produce the closest point to rhs
-    fn div(self, rhs: Vec2) -> Self::Output {
+    // Returns the f64 that, multiplied by self, would produce the closest point to rhs
+    fn div(self, rhs: DVec2) -> Self::Output {
         match self {
             Bisector::Line { orig, vec } => (rhs - orig).dot(vec),
             Bisector::Circle { center, .. } => {
                 let vec = rhs - center;
-                f32::atan2(vec.y, vec.x)
+                f64::atan2(vec.y, vec.x)
             }
         }
     }
 }
 
-type Segment = (Option<f32>, Option<f32>);
+type Segment = (Option<f64>, Option<f64>);
 
 // Describes a segment of a line, or an arc of a circle
 #[derive(Debug, Clone)]
@@ -244,8 +246,8 @@ impl BisectorSegments {
                     let p1 = orig + vec * -state.render_edge_distance();
                     let p2 = orig + vec * state.render_edge_distance();
                     draw.line(
-                        state.view().to_screen(p1).into(),
-                        state.view().to_screen(p2).into(),
+                        state.view().to_screen(p1).as_vec2().into(),
+                        state.view().to_screen(p2).as_vec2().into(),
                     )
                     .width(stroke)
                     .color(skel_col)
@@ -254,9 +256,9 @@ impl BisectorSegments {
 
                 for (min, max) in &self.segments {
                     let p1 = orig + vec * min.unwrap_or_else(|| -state.render_edge_distance());
-                    let p1 = state.view().to_screen(p1);
+                    let p1 = state.view().to_screen(p1).as_vec2();
                     let p2 = orig + vec * max.unwrap_or_else(|| state.render_edge_distance());
-                    let p2 = state.view().to_screen(p2);
+                    let p2 = state.view().to_screen(p2).as_vec2();
 
                     point(draw, &p1);
                     point(draw, &p2);
@@ -265,8 +267,8 @@ impl BisectorSegments {
             }
             base @ Bisector::Circle { center, radius, .. } => {
                 let center = state.view().to_screen(center);
-                let mut full_circle = draw.circle(radius * state.view().to_screen_ratio());
-                full_circle.position(center.x, center.y);
+                let mut full_circle = draw.circle((radius * state.view().to_screen_ratio()) as f32);
+                full_circle.position(center.x as f32, center.y as f32);
                 if self.is_full() {
                     full_circle.stroke(stroke).stroke_color(col);
                 } else {
@@ -274,7 +276,7 @@ impl BisectorSegments {
                     drop(full_circle);
                     let segments = if !state.is_within_render(center) {
                         // Circle is significantly outside rendered area. Trim min-max angle
-                        let mid = state.view().to_math(state.render_size().as_vec2() / 2.);
+                        let mid = state.view().to_math(state.render_size().as_dvec2() / 2.);
                         let mid_agl = self.base / (mid);
                         let half_arc = ((mid.length() + 10.) / radius).min(PI / 2.);
                         let arc = Self::mod_arc(mid_agl + half_arc, mid_agl - half_arc);
@@ -293,12 +295,12 @@ impl BisectorSegments {
                             let pix_agl = state.view().to_math_ratio() / radius;
 
                             let mut agl = min;
-                            let mut p = state.view().to_screen(base * agl);
+                            let mut p = state.view().to_screen(base * agl).as_vec2();
                             point(draw, &p);
                             let mut path = draw.path();
                             path.stroke(stroke).color(col).move_to(p.x, p.y);
-                            while max - agl > -f32::EPSILON {
-                                p = state.view().to_screen(base * agl);
+                            while max - agl > -f64::EPSILON {
+                                p = state.view().to_screen(base * agl).as_vec2();
                                 path.line_to(p.x, p.y);
                                 agl += pix_agl;
                             }
@@ -314,7 +316,7 @@ impl BisectorSegments {
     }
 
     /// Returns the given arguments modulo'd so that min is within 0..2PI and max is within min..min+2PI
-    fn mod_arc(min: f32, max: f32) -> (f32, f32) {
+    fn mod_arc(min: f64, max: f64) -> (f64, f64) {
         let min = min.rem_euclid(TAU);
         (min, min + (max - min).rem_euclid(TAU))
     }
@@ -326,8 +328,8 @@ impl BisectorSegments {
             // Removes the whole bisector
             self.segments.clear();
         } else {
-            let fmin = min.unwrap_or(f32::NEG_INFINITY);
-            let fmax = max.unwrap_or(f32::INFINITY);
+            let fmin = min.unwrap_or(f64::NEG_INFINITY);
+            let fmax = max.unwrap_or(f64::INFINITY);
             assert!(
                 fmin <= fmax,
                 "Remove received invalid arc: ({min:?},{max:?})"
@@ -342,14 +344,14 @@ impl BisectorSegments {
                         i += if smin.is_some() && smax.is_some() {
                             let (sfmin, sfmax) = (smin.as_mut().unwrap(), smax.as_mut().unwrap());
                             #[inline]
-                            fn is_within(it: f32, (min, max): (f32, f32)) -> bool {
+                            fn is_within(it: f64, (min, max): (f64, f64)) -> bool {
                                 (it - min).rem_euclid(TAU) < (max - min)
                             }
 
                             let smin_in_rem = is_within(*sfmin, (fmin, fmax));
                             let smax_in_rem = is_within(*sfmax, (fmin, fmax));
                             let min_in_segment = is_within(fmin, (*sfmin, *sfmax));
-                            let i2 = if smin_in_rem {
+                            if smin_in_rem {
                                 if smax_in_rem {
                                     if min_in_segment {
                                         trace!("Removal and segment are negatively included within each other: trimming both ends");
@@ -378,8 +380,7 @@ impl BisectorSegments {
                             } else {
                                 trace!("No intersection");
                                 1
-                            };
-                            i2
+                            }
                         } else if smin.is_none() && smax.is_none() {
                             trace!("Removing an arc from a full circle: making it the inverse arc");
                             let (sfmin, sfmax) = Self::mod_arc(fmax, fmin + TAU);
@@ -395,8 +396,8 @@ impl BisectorSegments {
                     let mut i = 0;
                     while i < self.segments.len() {
                         let (smin, smax) = &mut self.segments[i];
-                        let sfmin = smin.unwrap_or(f32::NEG_INFINITY);
-                        let sfmax = smax.unwrap_or(f32::INFINITY);
+                        let sfmin = smin.unwrap_or(f64::NEG_INFINITY);
+                        let sfmax = smax.unwrap_or(f64::INFINITY);
 
                         i += if sfmin >= fmax || sfmax <= fmin {
                             trace!("No intersection");
@@ -466,15 +467,15 @@ impl BisectorSegments {
         &self.base
     }
 
-    fn segname(a: &String, b: &String) -> String {
-        let mut v = [a.as_str(), b.as_str()];
+    fn segname(a: &str, b: &str) -> String {
+        let mut v = [a, b];
         v.sort();
         v.concat()
     }
 }
 
 impl Hoverable for (&(usize, usize), &BisectorSegments) {
-    fn distance(&self, point: Vec2) -> f32 {
+    fn distance(&self, point: DVec2) -> f64 {
         // TODO do the math for actual segments
         match self.1.base {
             Bisector::Line { orig, vec } => {
@@ -530,7 +531,7 @@ impl Intersectable for BisectorSegments {
                     Some((_, Some(_))) => panic!(),
                     Some(((mul_e1, mul_e2), None)) => {
                         #[inline]
-                        fn get_seg(v1: Vec2, mul: f32, pdif: Vec2) -> Segment {
+                        fn get_seg(v1: DVec2, mul: f64, pdif: DVec2) -> Segment {
                             // Intersection point, expressed as a factor of v1 from o1
                             if pdif.dot(v1) < 0. {
                                 (Some(mul), None)
@@ -541,8 +542,8 @@ impl Intersectable for BisectorSegments {
                         let p = b1 * mul_e1;
                         let dist_check = p.distance(b2 * mul_e2);
                         debug_assert!(
-                            dist_check <= f32::EPSILON,
-                            "dist_check ({dist_check}) should be <= f32::EPSILON"
+                            dist_check <= f64::EPSILON,
+                            "dist_check ({dist_check}) should be <= f64::EPSILON"
                         );
                         trace!(
                             "Intersection Line({}{})/Line({}{}) => {p}",
@@ -592,7 +593,7 @@ impl Intersectable for BisectorSegments {
                                 .abs()
                                 - PI / 2.;
                             debug_assert!(
-                                agl_check / TAU <= f32::EPSILON,
+                                agl_check / TAU <= f64::EPSILON,
                                 "Angle between (inter.0, inter.1) and (center, cent_proj) = {agl_check} (should be ~=0)");
                             let mut agl = Self::mod_arc(agl.0, agl.1);
                             // the arg from agl.0 to agl.1 is bigger than agl.1 to agl.0
@@ -644,10 +645,10 @@ impl Intersectable for BisectorSegments {
                     Some(((mul1_e1, mul1_e2), Some((mul2_e1, mul2_e2)))) => {
                         fn make_arc(
                             inside: bool,
-                            (m1, m2): (f32, f32),
+                            (m1, m2): (f64, f64),
                             cir: Bisector,
-                            cnt: Vec2,
-                            rad: f32,
+                            cnt: DVec2,
+                            rad: f64,
                         ) -> Segment {
                             let (m1, m2) = BisectorSegments::mod_arc(m1, m2);
                             let arc = if inside == ((cir * ((m1 + m2) / 2.)).distance(cnt) <= rad) {
@@ -752,10 +753,10 @@ mod tests {
     use crate::geom::{Bisector, BisectorSegments, Segment};
     use std::borrow::BorrowMut;
     use std::cmp::Ordering;
-    use std::f32::consts::{PI, TAU};
+    use std::f64::consts::{PI, TAU};
 
     #[inline]
-    fn to_deg(f: f32) -> i32 {
+    fn to_deg(f: f64) -> i32 {
         (f * 180. / PI).round() as i32
     }
 
@@ -770,11 +771,11 @@ mod tests {
     }
 
     fn cmp_segs(a: &Segment, b: &Segment) -> Ordering {
-        a.0.unwrap_or(f32::NEG_INFINITY)
-            .total_cmp(&b.0.unwrap_or(f32::NEG_INFINITY))
+        a.0.unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&b.0.unwrap_or(f64::NEG_INFINITY))
             .then(
-                a.1.unwrap_or(f32::INFINITY)
-                    .total_cmp(&b.1.unwrap_or(f32::INFINITY)),
+                a.1.unwrap_or(f64::INFINITY)
+                    .total_cmp(&b.1.unwrap_or(f64::INFINITY)),
             )
     }
 
@@ -850,7 +851,7 @@ mod tests {
         for i in 0..4 {
             let mut seg = seg.clone();
 
-            let min = (i as f32 + 0.5) * PI / 2.;
+            let min = (i as f64 + 0.5) * PI / 2.;
             let max = min + PI / 2.;
             let res = BisectorSegments::mod_arc(max, min + TAU);
             check_remove(
