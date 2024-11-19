@@ -1,12 +1,9 @@
-use crate::app::State;
-use crate::voronoi::Hovered;
-use crate::{Color, Draw, Graphics};
-use anyhow::Error;
+use crate::prelude::*;
 use notan::draw::DrawShapes;
-use notan::log::*;
 use notan::math::{DVec2, Vec2};
 use std::borrow::Cow;
 use std::f64::consts::{PI, TAU};
+use std::fmt::Debug;
 use std::ops::{DerefMut, Div, Mul};
 
 pub trait Hoverable {
@@ -20,17 +17,6 @@ pub trait Hoverable {
     fn hover(&self) -> Hovered;
 
     fn priority() -> u16;
-}
-
-pub trait Intersectable {
-    type Point;
-    fn intersect(
-        p1: &Self::Point,
-        p2: &Self::Point,
-        p3: &Self::Point,
-        edge1_2: impl DerefMut<Target = Self>,
-        edge1_3: impl DerefMut<Target = Self>,
-    );
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +219,7 @@ impl BisectorSegments {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     pub fn render(&self, state: &State, _gfx: &mut Graphics, draw: &mut Draw, col: Color) {
         let point = |draw: &mut Draw, p: &Vec2| {
             draw.point(p.x, p.y).width(5.).color(col);
@@ -242,7 +229,7 @@ impl BisectorSegments {
         let skel_stroke_width = stroke / 2.;
         match self.base {
             Bisector::Line { orig, vec } => {
-                if !self.is_full() {
+                if !self.is_full() && state.render_skel() {
                     let p1 = orig + vec * -state.render_edge_distance();
                     let p2 = orig + vec * state.render_edge_distance();
                     draw.line(
@@ -267,13 +254,20 @@ impl BisectorSegments {
             }
             base @ Bisector::Circle { center, radius, .. } => {
                 let center = state.view().to_screen(center);
-                let mut full_circle = draw.circle((radius * state.view().to_screen_ratio()) as f32);
-                full_circle.position(center.x as f32, center.y as f32);
+                let mut draw_full_circle = |stroke, col| {
+                    let mut full_circle =
+                        draw.circle((radius * state.view().to_screen_ratio()) as f32);
+                    full_circle
+                        .position(center.x as f32, center.y as f32)
+                        .stroke(stroke)
+                        .stroke_color(col);
+                };
                 if self.is_full() {
-                    full_circle.stroke(stroke).stroke_color(col);
+                    draw_full_circle(stroke, col);
                 } else {
-                    full_circle.stroke(skel_stroke_width).stroke_color(skel_col);
-                    drop(full_circle);
+                    if state.render_skel() {
+                        draw_full_circle(skel_stroke_width, skel_col);
+                    }
                     let segments = if !state.is_within_render(center) {
                         // Circle is significantly outside rendered area. Trim min-max angle
                         let mid = state.view().to_math(state.render_size().as_dvec2() / 2.);
@@ -322,6 +316,7 @@ impl BisectorSegments {
     }
 
     // Removes a segment of arc from self
+    #[instrument(level = "trace", skip_all)]
     fn remove(&mut self, (min, max): Segment) {
         if self.segments.is_empty() {
         } else if let (None, None) = (min, max) {
@@ -350,17 +345,27 @@ impl BisectorSegments {
 
                             let smin_in_rem = is_within(*sfmin, (fmin, fmax));
                             let smax_in_rem = is_within(*sfmax, (fmin, fmax));
-                            let min_in_segment = is_within(fmin, (*sfmin, *sfmax));
+                            let rem_in_segment = is_within((fmax + fmin) / 2., (*sfmin, *sfmax));
+                            trace!(
+                                fmin,
+                                fmax,
+                                sfmin,
+                                sfmax,
+                                smin_in_rem,
+                                smax_in_rem,
+                                rem_in_segment,
+                                "Checking arc inclusion"
+                            );
                             if smin_in_rem {
                                 if smax_in_rem {
-                                    if min_in_segment {
-                                        trace!("Removal and segment are negatively included within each other: trimming both ends");
-                                        (*sfmin, *sfmax) = Self::mod_arc(fmax, fmin);
-                                        1
-                                    } else {
+                                    if rem_in_segment {
                                         trace!("Arc is fully within removal: removing");
                                         self.segments.remove(i);
                                         0
+                                    } else {
+                                        trace!("Removal and segment are negatively included within each other: trimming both ends");
+                                        (*sfmin, *sfmax) = Self::mod_arc(fmax, fmin);
+                                        1
                                     }
                                 } else {
                                     trace!("Start of arc is within removal");
@@ -371,7 +376,7 @@ impl BisectorSegments {
                                 trace!("End of arc is within removal");
                                 *sfmax = Self::mod_arc(*sfmin, fmin).1;
                                 1
-                            } else if min_in_segment {
+                            } else if rem_in_segment {
                                 trace!("Removal is fully within the arc: splitting");
                                 let (newmin, newmax) = Self::mod_arc(fmax, *sfmax);
                                 *sfmax = Self::mod_arc(*sfmin, fmin).1;
@@ -472,51 +477,14 @@ impl BisectorSegments {
         v.sort();
         v.concat()
     }
-}
 
-impl Hoverable for (&(usize, usize), &BisectorSegments) {
-    fn distance(&self, point: DVec2) -> f64 {
-        // TODO do the math for actual segments
-        match self.1.base {
-            Bisector::Line { orig, vec } => {
-                let diff = point - orig;
-                if diff.length() == 0. {
-                    0.
-                } else {
-                    vec.perp_dot(diff).abs()
-                }
-            }
-            Bisector::Circle { center, radius } => (center.distance(point) - radius).abs(),
-        }
-    }
-
-    fn is_hovered(&self, hov: &Hovered) -> bool {
-        match hov {
-            Hovered::None => false,
-            Hovered::Point(i) => *i == self.0 .0 || *i == self.0 .1,
-            Hovered::Edge(i1, i2) => *i1 == self.0 .0 && *i2 == self.0 .1,
-        }
-    }
-
-    fn hover(&self) -> Hovered {
-        Hovered::Edge(self.0 .0, self.0 .1)
-    }
-
-    fn priority() -> u16 {
-        2
-    }
-}
-
-// #[cfg(none)]
-impl Intersectable for BisectorSegments {
-    type Point = WeightedPoint;
-
-    fn intersect(
-        p1: &Self::Point,
-        p2: &Self::Point,
-        p3: &Self::Point,
-        edge1_2: impl DerefMut<Target = Self>,
-        edge1_3: impl DerefMut<Target = Self>,
+    #[instrument(level = "debug", skip_all, fields(p1=p1.name, p2=p2.name, p3=p3.name))]
+    pub fn intersect(
+        p1: &WeightedPoint,
+        p2: &WeightedPoint,
+        p3: &WeightedPoint,
+        edge1_2: impl DerefMut<Target = Self> + Debug,
+        edge1_3: impl DerefMut<Target = Self> + Debug,
     ) {
         let mut seg1_2_rem = Vec::new();
         let mut seg1_3_rem = Vec::new();
@@ -541,9 +509,10 @@ impl Intersectable for BisectorSegments {
                         }
                         let p = b1 * mul_e1;
                         let dist_check = p.distance(b2 * mul_e2);
+                        const DIST_OK: f64 = 1e-6;
                         debug_assert!(
-                            dist_check <= f64::EPSILON,
-                            "dist_check ({dist_check}) should be <= f64::EPSILON"
+                            dist_check <= DIST_OK,
+                            "dist_check ({dist_check}) should be <= {DIST_OK}"
                         );
                         trace!(
                             "Intersection Line({}{})/Line({}{}) => {p}",
@@ -592,9 +561,10 @@ impl Intersectable for BisectorSegments {
                                 .angle_between(-center + cent_proj)
                                 .abs()
                                 - PI / 2.;
+                            const AGL_OK: f64 = 1e-6;
                             debug_assert!(
-                                agl_check / TAU <= f64::EPSILON,
-                                "Angle between (inter.0, inter.1) and (center, cent_proj) = {agl_check} (should be ~=0)");
+                                agl_check <= AGL_OK,
+                                "Angle between (inter.0, inter.1) and (center, cent_proj) = {agl_check} (should be < {AGL_OK})");
                             let mut agl = Self::mod_arc(agl.0, agl.1);
                             // the arg from agl.0 to agl.1 is bigger than agl.1 to agl.0
                             let is_big_arc = (agl.1 - agl.0) > PI;
@@ -677,50 +647,47 @@ impl Intersectable for BisectorSegments {
                     Some(((_mul_e1, _mul_e2), None)) => {
                         // TODO tangent
                     }
-                    None => {}
-                }
-                let dist = c1.distance(c2);
-                let diff = (dist - r1.max(r2)).abs() - r1.min(r2);
-
-                if diff < 0. {
-                } else {
-                    // No intersection
-                    let nested = dist < r1.max(r2);
-                    match (p1.weight < p2.weight, p1.weight < p3.weight) {
-                        (true, true) => {
-                            // p1 is inside both circles. Remove the outer one
-                            assert!(nested);
-                            if p2.weight > p3.weight {
-                                &mut seg1_2_rem
-                            } else {
-                                &mut seg1_3_rem
+                    None => {
+                        // No intersection
+                        let dist = c1.distance(c2);
+                        let nested = dist < r1.max(r2);
+                        trace!(
+                            p1_lt_p2 = p1.weight < p2.weight,
+                            p1_lt_p3 = p1.weight < p3.weight,
+                            nested,
+                            "Circles are non-intersecting"
+                        );
+                        match (p1.weight < p2.weight, p1.weight < p3.weight) {
+                            (true, true) => {
+                                // p1 is inside both circles. Remove the outer one
+                                assert!(nested);
+                                if r1 > r2 {
+                                    &mut seg1_2_rem
+                                } else {
+                                    &mut seg1_3_rem
+                                }
+                                .push((None, None))
                             }
-                            .push((None, None))
+                            (false, false) if nested => {
+                                // Remove the smaller circle
+                                if p2.weight < p3.weight {
+                                    &mut seg1_2_rem
+                                } else {
+                                    &mut seg1_3_rem
+                                }
+                                .push((None, None))
+                            } // Else do nothing
+                            _ => {} // p1 is between one circle and outside the other. Do nothing
                         }
-                        (false, false) if nested => {
-                            // Remove the smaller circle
-                            if p2.weight < p3.weight {
-                                &mut seg1_2_rem
-                            } else {
-                                &mut seg1_3_rem
-                            }
-                            .push((None, None))
-                        } // Else do nothing
-                        _ => {} // p1 is between one circle and outside the other. Do nothing
-                    }
-                    if dist < r1.max(r2) {
-                        // One of the circle is inside the other
+                        if dist < r1.max(r2) {
+                            // One of the circle is inside the other
+                        }
                     }
                 }
             }
         };
         let seg1name = Self::segname(&p1.name, &p2.name);
         let seg2name = Self::segname(&p1.name, &p3.name);
-        debug!(
-            "Intersecting around {} of bisectors {seg1name} and {seg2name}",
-            p1.name
-        );
-
         fn remove_segs(
             mut tgt: impl DerefMut<Target = BisectorSegments>,
             segs: Vec<Segment>,
@@ -745,6 +712,39 @@ impl Intersectable for BisectorSegments {
         }
         remove_segs(edge1_2, seg1_2_rem, &seg1name);
         remove_segs(edge1_3, seg1_3_rem, &seg2name);
+    }
+}
+
+impl Hoverable for (&(usize, usize), &BisectorSegments) {
+    fn distance(&self, point: DVec2) -> f64 {
+        // TODO do the math for actual segments
+        match self.1.base {
+            Bisector::Line { orig, vec } => {
+                let diff = point - orig;
+                if diff.length() == 0. {
+                    0.
+                } else {
+                    vec.perp_dot(diff).abs()
+                }
+            }
+            Bisector::Circle { center, radius } => (center.distance(point) - radius).abs(),
+        }
+    }
+
+    fn is_hovered(&self, hov: &Hovered) -> bool {
+        match hov {
+            Hovered::None => false,
+            Hovered::Point(i) => *i == self.0 .0 || *i == self.0 .1,
+            Hovered::Edge(i1, i2) => *i1 == self.0 .0 && *i2 == self.0 .1,
+        }
+    }
+
+    fn hover(&self) -> Hovered {
+        Hovered::Edge(self.0 .0, self.0 .1)
+    }
+
+    fn priority() -> u16 {
+        2
     }
 }
 

@@ -1,11 +1,12 @@
 use crate::geom::*;
-use crate::*;
+use crate::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use tracing::instrument;
 
 pub type EdgeMap = HashMap<(usize, usize), BisectorSegments>;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Voronoi {
     points: HashMap<usize, WeightedPoint>,
     edges: EdgeMap,
@@ -150,6 +151,7 @@ impl Voronoi {
         }
     }
 
+    #[instrument(level = "debug", skip_all)]
     pub fn render(state: &State, gfx: &mut Graphics, draw: &mut Draw) {
         let fg = Color::from_hex(FG_COLOR);
         let inact = Color::from_hex(INACTIVE_COLOR);
@@ -229,8 +231,9 @@ impl Voronoi {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Hovered {
+    #[default]
     None,
     Point(usize),
     Edge(usize, usize),

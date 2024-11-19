@@ -1,7 +1,5 @@
-use crate::geom::WeightedPoint;
-use crate::log::{debug, error, info, trace};
-use crate::voronoi::{Hovered, Voronoi};
-use crate::*;
+use crate::prelude::*;
+use crate::{DEBUG_FIX_DISPLAY_SIZE, TGT_WASM};
 use notan::math::{Affine2, DVec2, UVec2};
 use notan::random::rand::distributions::uniform::SampleRange;
 use notan::random::rand::distributions::WeightedIndex;
@@ -20,6 +18,7 @@ pub struct State {
     font: Font,
     render_size: UVec2,
     rendered: bool,
+    render_skel: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,6 +39,7 @@ impl State {
             mod_keys: HashSet::new(),
             render_size: (0, 0).into(),
             rendered: false,
+            render_skel: false,
         }
     }
 
@@ -155,6 +155,7 @@ impl State {
                 KeyCode::A => self.add_point(),
                 KeyCode::D => self.delete_point(),
                 KeyCode::T => self.toggle_point(),
+                KeyCode::S => self.render_skel ^= true,
                 KeyCode::PageUp => {
                     self.change_weight(true);
                 }
@@ -322,6 +323,10 @@ impl State {
             self.update_hover();
         }
     }
+
+    pub fn render_skel(&self) -> bool {
+        self.render_skel
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -356,7 +361,7 @@ impl ViewPort {
 
     pub fn enclosing<'a>(
         pts: impl IntoIterator<Item = &'a WeightedPoint>,
-        display: DVec2,
+        area: DVec2,
         margin: f64,
     ) -> Self {
         let (min, max) = pts.into_iter().map(|p| p.pos).fold(
@@ -370,24 +375,21 @@ impl ViewPort {
             },
         );
 
-        let r = (display.x / (max.x - min.x).max(MIN_DIM))
-            .min(display.y / (max.y - min.y).max(MIN_DIM))
+        let r = (area.x / (max.x - min.x).max(MIN_DIM)).min(area.y / (max.y - min.y).max(MIN_DIM))
             / margin;
         let mut ret = Self {
             r,
             off: DVec2::ZERO,
         };
         let mid = ret.to_screen(((max.x - min.x) / 2., (max.y - min.y) / 2.));
-        let viewmid = display / 2.;
+        let viewmid = area / 2.;
         ret.move_screen(viewmid - mid);
         debug!(
-            "Enclosing ({}..{}/{}..{}) into {display:?}: r={r},\n\
-            \t{mid:?} -> {viewmid:?} => {:?}\n\tmatrix: {ret:?}",
-            min.x,
-            max.x,
-            min.y,
-            max.y,
-            ret.to_screen(mid)
+            ?area,
+            ?ret,
+            xspan = ?(min.x, max.x),
+            yspan = ?(min.y, max.y),
+            "Calculating enclosing"
         );
         ret
     }
